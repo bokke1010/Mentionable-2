@@ -1,0 +1,23 @@
+High priority, required for initial release:
+    slash commands (please)
+        also includes private responses if, for example, the cooldown doesn't allow a ping yet (Ephemeral)
+        this might make #bot-channel largely irrelevant due to 1-on-1 interactions
+    buttons for next / previous list page
+    thread support
+
+Medium priority, you can expect these in the initial release:
+    buttons for proposed list instead of reactions
+    Add message links to +listProposals
+    list search / filter
+    member join / leave responses
+    list aliases
+    neater formatting, possibly more embeds
+    context menu for ping reply to
+    proposal form, including description?
+    Automatic logging for a channel / role.
+
+Low priority, often either complicated or less useful:
+    list groups / collections?
+    ping message / description (that can be added when using /ping)
+    timed responses? possibly, quite a rabbit hole
+
