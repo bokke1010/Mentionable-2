@@ -159,6 +159,12 @@ pub mod guild_commands {
                                 .description("What part of the list you want to see")
                                 .kind(ApplicationCommandOptionType::Integer)
                                 .required(false)
+                        }).create_option(|option| {
+                            option
+                                .name("filter")
+                                .description("Require this to be present in the name or description of a list.")
+                                .kind(ApplicationCommandOptionType::String)
+                                .required(false)
                         })
                 })
                 .create_application_command(|command| { // Only if proposals are enabled
