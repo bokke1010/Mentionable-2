@@ -2,6 +2,7 @@ High priority, required for initial release:
     slash commands (please)
         also includes private responses if, for example, the cooldown doesn't allow a ping yet (Ephemeral)
         this might make #bot-channel largely irrelevant due to 1-on-1 interactions
+        May want to turn this off in some channels
     buttons for next / previous list page
     thread support
 

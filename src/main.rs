@@ -51,7 +51,7 @@ impl Handler {
         //         format!("{}'s id is {}", user.tag(), user.id)
         //     } else {
         //         "Please provide a valid user".to_string()
-        //     }        
+        //     }
         // };
         unsafe {
             TEST_VALUE+= 1;
@@ -109,19 +109,19 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     // Load database
-    let database: database::data_access::Database;
+    // let database: database::data_access::Database = database::data_access::Database.db("base");
     let args = env::args();
     let mut wait_type = 0;
     for (i, arg) in args.enumerate() {
         match wait_type {
             0 => {
-                wait_type = match arg {
-                    "--import".to_string() => 1,
+                wait_type = match arg.as_str() {
+                    "--import" => 1,
                     _ => 0,
                 }
             },
             1 => {
-                database::data_access::new("base");
+                // database::data_access::new("base");
                 wait_type = 0;
             },
             _ => wait_type = 0,
@@ -130,7 +130,7 @@ async fn main() {
 
 
     // Configure the client with your Discord bot token in the environment.
-    let token = "ODQzMTgyMjI4MjM4NjMwOTIy.YKAIpA.0WFR4KQiyLlc0jLzzY52tfEz_Ps";
+    let token = "..."; // At least I only leaked the token of my test bot ;)
     // let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     // The Application Id is usually the Bot User Id.
@@ -138,7 +138,7 @@ async fn main() {
     //     .expect("Expected an application id in the environment")
     //     .parse()
     //     .expect("application id is not a valid id");
-    let application_id: u64 = 843182228238630922;
+    let application_id: u64 = 000;
 
     let handler = Handler;
 
