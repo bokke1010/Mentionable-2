@@ -3,15 +3,14 @@
  *
  * TABLE memberships
  *      id integer primary key
- *      userID integer not null
- *      listID integer not null references lists(id)
+ *      user_id integer not null
+ *      list_id integer not null references lists(id)
  * 
  * TABLE lists
  *      id integer primary key
  *      guild_id integer references guilds(id)
  *      name varchar(255) not null
  *      description varchar(2048)
- *      size integer not null
  *      cooldown integer default -1
  *      restricted_join integer default 0
  *      restricted_ping integer default 0
@@ -70,7 +69,7 @@
  *      guild_id integer not null references guilds(id)
  *      channelID integer not null
  *      timestamp integer not null
- *      listID integer not null references lists(id)
+ *      list_id integer not null references lists(id)
  */
 
 
@@ -79,7 +78,6 @@ pub mod data_access {
 
     pub struct Database {
         db: Connection,
-
     }
     
     impl Database {
@@ -87,27 +85,76 @@ pub mod data_access {
         pub fn new(database_path: String) -> Result<Database, Error> {
             let conn = Connection::open(database_path)?;
             
-            Ok(Database {
+            let mut database = Database {
                 db: conn
-            })
+            };
+
+            database.init_tables().expect("failed to initialize tables");
+
+            Ok(database)
         }
 
-        fn add_guild(&mut self, id: i32) -> Result<(), Error> {
+        fn init_tables(&mut self) -> Result<(), &str> {
+            match self.db.execute_batch("PRAGMA foreign_keys = ON;\n\
+            CREATE TABLE guilds ( \
+                id                  INTEGER PRIMARY KEY NOT NULL, \
+                general_cooldown    INTEGER DEFAULT 1 CHECK( general_cooldown = 0 OR general_cooldown = 1 ), \
+                general_canping     INTEGER DEFAULT 1 CHECK( general_canping = 0 OR general_canping = 1 ) , \
+                pingcooldown        INTEGER DEFAULT 1800 CHECK( pingcooldown > 0 ), \
+                general_propose     INTEGER DEFAULT 1 CHECK( general_propose = 0 OR general_propose = 1 ), \
+                propose_threshold   INTEGER DEFAULT 8 CHECK( propose_threshold > 0 ), \
+                propose_timeout     INTEGER DEFAULT 86400 CHECK( propose_timeout > 2 ));\n\
+            CREATE TABLE memberships ( \
+                id                  INTEGER PRIMARY KEY ASC, \
+                user_id             INTEGER NOT NULL, \
+                list_id             INTEGER NOT NULL REFERENCES lists(id));\n\
+            CREATE TABLE lists ( \
+                id                  INTEGER PRIMARY KEY ASC, \
+                guild_id            INTEGER REFERENCES guilds(id), \
+                name                TEXT NOT NULL, \
+                description         TEXT, \
+                cooldown            INTEGER DEFAULT -1 CHECK( cooldown >= -1 AND cooldown <= 1 ), \
+                restricted_join     INTEGER DEFAULT 0 CHECK( restricted_join >= -1 AND restricted_join <= 1 ), \
+                restricted_ping     INTEGER DEFAULT 0 CHECK( restricted_ping >= -1 AND restricted_ping <= 1 ), \
+                visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1 ));") {
+                    Ok(_) => Ok(()),
+                    _ => Err("Could not initialize tables")
+                }
+            // Remember: references must be unique.
+        }
+
+        pub fn add_guild(&mut self, id: u64) -> Result<(), Error> {
             self.db.execute("INSERT INTO guilds (id) VALUES (?)", [id])?;
             Ok(())
         }
 
-        fn add_list(&mut self, guild_id: i32, name: String, description: String) -> Result<(),Error> {
+        pub fn add_list(&mut self, guild_id: u64, name: String, description: String) -> Result<(),Error> {
             self.db.execute("INSERT INTO lists (guild_id, name, description) VALUES (?1, ?2, ?3)", params![guild_id, name, description])?;
             Ok(())
         }
 
-        fn add_member(&mut self, member_id: i32, list_id: i32) -> Result<(),Error> {
-            self.db.execute("INSERT INTO memberships (userID, listID) VALUES (?1, ?2)", params![member_id, list_id])?;
+        pub fn has_member(&mut self, member_id: u64, list_id: u64) -> bool {
+            self.db.query_row(
+                "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
+                params![member_id, list_id],
+                |row| match row.get(0).expect("No value in row from membership exist query") {
+                    1 => Ok(true),
+                    _ => Ok(false),
+                }
+            ).expect("Unexpected database error when checking membership existance")
+        }
+
+        pub fn add_member(&mut self, member_id: u64, list_id: u64) -> Result<(),Error> {
+            self.db.execute("INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)", params![member_id, list_id])?;
             Ok(())
         }
 
-        fn get_list_id_by_name(&mut self, list_name: String, guild_id: i32) -> Result<i32,Error> {
+        pub fn remove_member(&mut self, member_id: u64, list_id: u64) -> Result<(),Error> {
+            self.db.execute("DELETE FROM memberships WHERE user_id = ?1 AND list_id = ?2", params![member_id, list_id])?;
+            Ok(())
+        }
+
+        pub fn get_list_id_by_name(&mut self, list_name: String, guild_id: u64) -> Result<u64,Error> {
             self.db.query_row("SELECT id FROM lists WHERE name=?1 AND guild_id=?2", params![list_name, guild_id], |row| row.get(0))
         }
     }

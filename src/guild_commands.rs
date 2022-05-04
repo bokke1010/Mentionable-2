@@ -59,10 +59,22 @@ pub mod guild_commands {
                                 .required(false)
                         })
                 })
-                .create_application_command(|command| { //ANCHOR ping context
+                // .create_application_command(|command| { //ANCHOR ping context
+                //     command
+                //         .name("ping")
+                //         .kind(ApplicationCommandType::Message)
+                // })
+                .create_application_command(|command| {
                     command
-                        .name("ping")
-                        .kind(ApplicationCommandType::Message)
+                        .name("create")
+                        .description("Adds a list")
+                        .create_option(|option| {
+                            option
+                                .name("name")
+                                .description("the name to give this new list")
+                                .kind(ApplicationCommandOptionType::String)
+                                .required(true)
+                        })
                 })
                 .create_application_command(|command| {
                     command
