@@ -8,7 +8,7 @@ pub mod guild_commands {
                 application_command::{
                     ApplicationCommand,
                     ApplicationCommandOptionType,
-                    ApplicationCommandType,
+                    // ApplicationCommandType,
                 },
             },
         },

@@ -69,25 +69,54 @@ impl Handler {
     //     }
     // }
 
-    async fn handle_ping(&self, command: &ApplicationCommandInteraction) {
+    async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: u64 = command.guild_id.expect("No guild data found").0;
+        // let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
+        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
 
+        let mut members: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+
+        if let Ok(mut x) = self.db.clone().lock() {
+            for list_name in list_names {
+                let list_name = list_name.value.unwrap();
+                let list_name = list_name.as_str().unwrap();
+                let list_id = x.get_list_id_by_name(list_name, guild_id).unwrap(); //TODO: error-check unwraps.
+                members.extend(x.get_members_in_list(guild_id, list_id).unwrap());
+            }
+        }
+
+        let mut content = format!("Mentioning {} members:\n", members.len());
+        for member in members {
+            content += format!("<@{}>, ", member).as_str();
+        }
+
+        command.create_interaction_response(&ctx.http, |response| {
+            response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(content))
+        })
+        .await.expect("Failed to send ping response.");
     }
 
-    fn add_member(&self, guild_id: u64, list_id: u64, member_id: u64) {
+    fn add_member(&self, guild_id: u64, list_name: &str, member_id: u64) {
         if let Ok(mut x) = self.db.clone().lock() {
+            let list_id = x.get_list_id_by_name(list_name, guild_id).unwrap();
             x.add_member(member_id, list_id).expect("Failed to add member to list");
         }
     }
 
-    fn remove_member(&self, guild_id: u64, list_id: u64, member_id: u64) -> Result<bool, &str> {
+    fn remove_member(&self, guild_id: u64, list_name: &str, member_id: u64) -> Result<bool, &str> {
         if let Ok(mut x) = self.db.clone().lock() {
             // Check membership...
-            // return notmember
-            if !x.has_member(member_id, list_id) {
-                return Ok(false);
+            let get_list_id = x.get_list_id_by_name(list_name, guild_id);
+            if let Ok(list_id) = get_list_id {
+                if !x.has_member(member_id, list_id) {
+                    return Ok(false);
+                }
+                x.remove_member(member_id, list_id).expect("Failed to remove membership.");
+                return Ok(true);
             }
-            x.remove_member(member_id, list_id).expect("Failed to remove membership.");
-            return Ok(true);
+            return Ok(false);
         }
         return Err("Failed to obtain database mutex.");
     }
@@ -95,34 +124,38 @@ impl Handler {
     async fn handle_join(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: u64 = command.guild_id.expect("No guild data found").0;
         let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
-        let list_ids: &Vec<ApplicationCommandInteractionDataOption> = &command.data.options;
+        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
 
-        let mut content =  format!("Attempting to add user with id {} to {} lists:", member_id, list_ids.len());
+        let mut content =  format!("Attempting to add user with id {} to {} lists:", member_id, list_names.len());
 
-        for list_id in list_ids {
-            let parsed_list_id: u64 = list_id.value.as_ref().expect("No value given").as_u64().expect("Value was not a valid id");
-            self.add_member(guild_id, parsed_list_id, member_id);
-            content += format!("\nAdded to list {}", parsed_list_id).as_str();
+        for list_name in list_names {
+            let list_name_val = list_name.value.unwrap();
+            let list_name_str = list_name_val.as_str().unwrap();
+            
+            self.add_member(guild_id, list_name_str, member_id);
+            content += format!("\nAdded to list {}", list_name_str).as_str();
         }
         command.create_interaction_response(&ctx.http, |response| {
             response
                 .kind(InteractionResponseType::ChannelMessageWithSource)
                 .interaction_response_data(|message| message.content(content))
         })
-        .await.expect("Failed to send leave response.");
+        .await.expect("Failed to send join response.");
     }
 
     async fn handle_leave(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: u64 = command.guild_id.expect("No guild data found").0;
         let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
-        let list_ids: &Vec<ApplicationCommandInteractionDataOption> = &command.data.options;
+        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
         
-        let mut content =  format!("Attempting to remove user with id {} from {} lists:", member_id, list_ids.len());
-        
-        for list_id in list_ids {
-            let parsed_list_id: u64 = list_id.value.as_ref().expect("No value given").as_u64().expect("Value was not a valid id");
-            if self.remove_member(guild_id, parsed_list_id, member_id).expect("Failed to remove member") {
-                content += format!("\nRemoved from list {}", parsed_list_id).as_str();
+        let mut content = format!("Attempting to remove user with id {} from {} lists:", member_id, list_names.len());
+
+        for list_name in list_names {
+            let list_name_val = list_name.value.unwrap();
+            let list_name_str = list_name_val.as_str().unwrap();
+            
+            if self.remove_member(guild_id, list_name_str, member_id).expect("Failed to remove member") {
+                content += format!("\nRemoved from list {}", list_name_str).as_str();
             }
         }
         command.create_interaction_response(&ctx.http, |response| {
@@ -135,7 +168,6 @@ impl Handler {
 
     async fn handle_create(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: u64 = command.guild_id.expect("No guild data found").0;
-        let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
         let list_name: &str = &command
             .data
             .options
@@ -146,11 +178,15 @@ impl Handler {
             .expect("List name argument has no value")
             .as_str()
             .expect("list name is not a valid str.");
-        
-        let content =  format!("Creating list {}.", list_name);
+
+        let mut content =  format!("Creating list {}.", list_name);
         
         if let Ok(mut x) = self.db.clone().lock() {
-            x.add_list(guild_id, list_name.to_string(), "".to_string()).expect("list creation failed");
+            if !x.list_exists(guild_id, list_name) {
+                x.add_list(guild_id, list_name.to_string(), "".to_string()).expect("list creation failed");
+            } else {
+                content = "This list already exists.".to_string();
+            }
         }
 
         command.create_interaction_response(&ctx.http, |response| {
@@ -161,9 +197,31 @@ impl Handler {
         .await.expect("Failed to send leave response.");
     }
 
-    async fn handle_invalid(&self, command: &ApplicationCommandInteraction) {
+    async fn handle_get(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: u64 = command.guild_id.unwrap().0;
+        let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
+        
+        let mut content = format!("You are in the following lists:");
+        if let Ok(mut x) = self.db.clone().lock() {
+            let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
+            for list_id in list_ids {
+                let list_name = x.get_list_name_by_id(list_id, guild_id).unwrap();
+                content += format!("\n{}", list_name).as_str();
+            }
+        }
+
+        command.create_interaction_response(&ctx.http, |response| {
+            response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(content))
+        })
+        .await.expect("Failed to send get response.");
+    }
+
+    async fn handle_invalid(&self, _command: &ApplicationCommandInteraction) {
 
     }
+
 }
 
 #[async_trait]
@@ -173,11 +231,11 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
             match command.data.name.as_str() {
-                "ping" => self.handle_ping(&command).await,
+                "ping" => self.handle_ping(&command, &ctx).await,
                 "join" => self.handle_join(&command, &ctx).await,
                 "leave" => self.handle_leave(&command, &ctx).await,
                 "create" => self.handle_create(&command, &ctx).await,
-                // "get" => "Nope".to_string(),
+                "get" => self.handle_get(&command, &ctx).await,
                 // "list" => "Nope".to_string(),
                 // "propose" => "Nope".to_string(),
                 // "list_proposals" => "Nope".to_string(),
@@ -194,6 +252,14 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
+
+        println!("{:?}", ready.guilds.clone().into_iter().map(|x| x.id().0).collect::<Vec<u64>>());
+        if let Ok(mut x) = self.db.clone().lock() {
+            for guild in ready.guilds {
+                x.add_guild(guild.id().0).ok();
+            }
+        }
+
         add_all_application_commands(&mut GuildId(466163515103641611), ctx).await;
     }
 }
@@ -201,7 +267,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     // Load database
-    let database: Database = Database::new("base".to_string()).expect("Database could not be loaded");
+    let database: Database = Database::new("database.db".to_string()).expect("Database could not be loaded");
     let database = Arc::new(Mutex::new(database));
 
 
