@@ -22,6 +22,8 @@ use serenity::{
     prelude::*,
 };
 
+mod structures;
+use structures::*;
 
 mod guild_commands;
 use crate::guild_commands::guild_commands::add_all_application_commands;
@@ -75,19 +77,30 @@ impl Handler {
         let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
 
         let mut members: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut invalid_lists: Vec<String> = vec![];
 
         if let Ok(mut x) = self.db.clone().lock() {
             for list_name in list_names {
                 let list_name = list_name.value.unwrap();
                 let list_name = list_name.as_str().unwrap();
-                let list_id = x.get_list_id_by_name(list_name, guild_id).unwrap(); //TODO: error-check unwraps.
-                members.extend(x.get_members_in_list(guild_id, list_id).unwrap());
+
+                if let Ok(list_id) = x.get_list_id_by_name(list_name, guild_id) {
+                    members.extend(x.get_members_in_list(guild_id, list_id).unwrap());
+                } else {
+                    invalid_lists.push(list_name.to_string());
+                }
             }
         }
 
-        let mut content = format!("Mentioning {} members:\n", members.len());
-        for member in members {
-            content += format!("<@{}>, ", member).as_str();
+        let mut content = String::new();
+        if members.len() > 0 {
+            content = format!("Mentioning {} members:\n", members.len());
+            for member in members {
+                content += format!("<@{}>, ", member).as_str();
+            }
+        }
+        for falselist in invalid_lists {
+            content += format!("\nThe list {} does not exist.", falselist).as_str();
         }
 
         command.create_interaction_response(&ctx.http, |response| {
@@ -218,6 +231,42 @@ impl Handler {
         .await.expect("Failed to send get response.");
     }
 
+    async fn handle_list(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: u64 = command.guild_id.unwrap().0;
+        let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
+        
+        let mut page: usize = 0;
+        let mut filter: String = "".to_string();
+        for option in command.data.options.clone() {
+            if option.name == "page" {
+                page = (option.value.unwrap().as_i64().unwrap() - 1) as usize;
+            } else if option.name == "filter" {
+                let value = option.value.unwrap();
+                filter = value.as_str().unwrap().to_string();
+            }
+        }
+
+        let mut content = String::new();
+        if let Ok(mut x) = self.db.clone().lock() {
+            let lists = x.get_lists_by_search(guild_id, page * 20, 20, filter.as_str()).unwrap();
+            if lists.len() == 0 {
+                content = "No lists found in this range.".to_string();
+            } else {
+                content = format!("Showing lists {}-{}:", page*20 + 1, page*20 + lists.len());
+                for list in lists {
+                    content += format!("\n{}", list.name).as_str();
+                }
+            }
+        }
+
+        command.create_interaction_response(&ctx.http, |response| {
+            response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(content))
+        })
+        .await.expect("Failed to send get response.");
+    }
+
     async fn handle_invalid(&self, _command: &ApplicationCommandInteraction) {
 
     }
@@ -236,7 +285,7 @@ impl EventHandler for Handler {
                 "leave" => self.handle_leave(&command, &ctx).await,
                 "create" => self.handle_create(&command, &ctx).await,
                 "get" => self.handle_get(&command, &ctx).await,
-                // "list" => "Nope".to_string(),
+                "list" => self.handle_list(&command, &ctx).await,
                 // "propose" => "Nope".to_string(),
                 // "list_proposals" => "Nope".to_string(),
                 // // admin commandsw
@@ -259,6 +308,7 @@ impl EventHandler for Handler {
                 x.add_guild(guild.id().0).ok();
             }
         }
+        // ApplicationCommand::set_global_application_commands(&ctx.http, |command| command).await.unwrap();
 
         add_all_application_commands(&mut GuildId(466163515103641611), ctx).await;
     }

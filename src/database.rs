@@ -74,7 +74,9 @@
 
 
 pub mod data_access {
-    use rusqlite::{Connection, Result, Error, params};
+    use rusqlite::{Connection, Result, Error, params, named_params};
+
+    use crate::structures::*;
 
     pub struct Database {
         db: Connection,
@@ -98,7 +100,7 @@ pub mod data_access {
             let statement = "PRAGMA foreign_keys = ON;\n\
             CREATE TABLE IF NOT EXISTS guilds ( \
                 id                  INTEGER PRIMARY KEY NOT NULL, \
-                general_cooldown    INTEGER DEFAULT 1 CHECK( general_cooldown = 0 OR general_cooldown = 1 ), \
+                general_cooldown    INTEGER DEFAULT 0 CHECK( general_cooldown = 0 OR general_cooldown = 1 ), \
                 general_canping     INTEGER DEFAULT 1 CHECK( general_canping = 0 OR general_canping = 1 ) , \
                 pingcooldown        INTEGER DEFAULT 1800 CHECK( pingcooldown > 0 ), \
                 general_propose     INTEGER DEFAULT 1 CHECK( general_propose = 0 OR general_propose = 1 ), \
@@ -113,7 +115,7 @@ pub mod data_access {
                 guild_id            INTEGER REFERENCES guilds(id), \
                 name                TEXT NOT NULL, \
                 description         TEXT, \
-                cooldown            INTEGER DEFAULT -1 CHECK( cooldown >= -1 AND cooldown <= 1 ), \
+                cooldown            INTEGER DEFAULT 0 CHECK( cooldown >= 0 ), \
                 restricted_join     INTEGER DEFAULT 0 CHECK( restricted_join >= -1 AND restricted_join <= 1 ), \
                 restricted_ping     INTEGER DEFAULT 0 CHECK( restricted_ping >= -1 AND restricted_ping <= 1 ), \
                 visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1), \
@@ -170,11 +172,33 @@ pub mod data_access {
         pub fn get_lists_with_member(&mut self, guild_id: u64, member_id: u64) -> Result<Vec<u64>, Error> {
             let mut stmt = self.db.prepare("SELECT lists.id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.user_id=? AND lists.guild_id=?")?;
             let mut rows = stmt.query(params![member_id, guild_id])?;
-            println!("running get query");
             let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
-                println!("parsing get result {}", row.get::<usize, u64>(0)?);
                 lists.push(row.get(0)?);
+            }
+            Ok(lists)
+        }
+
+        pub fn get_lists_by_search(&mut self, guild_id: u64, start: usize, amount: usize, filter: &str) -> Result<Vec<structures::PingList>, Error> {
+            let lists_query = "SELECT name, description, visible, restricted_join, restricted_ping, cooldown \
+                FROM lists \
+                WHERE lists.guild_id=:guid \
+                AND name LIKE '%' || :filter || '%' \
+                ORDER BY name ASC \
+                LIMIT :start, :amt";
+            let mut stmt = self.db.prepare(lists_query)?;
+            let mut rows = stmt.query(named_params! { ":guid": guild_id, ":filter": filter, ":amt": amount, ":start": start })?;
+            let mut lists = Vec::new();
+            while let Some(row) = rows.next()? {
+                lists.push(structures::PingList {
+                    name: row.get(0)?,
+                    guild_id: guild_id,
+                    description: row.get::<usize, String>(1)?,
+                    visible: row.get::<usize, i32>(2)? == 1,
+                    cooldown: row.get::<usize, u64>(5)?,
+                    restricted_join: row.get::<usize, i32>(3)? == 1,
+                    restricted_ping: row.get::<usize, i32>(4)? == 1,
+                });
             }
             Ok(lists)
         }

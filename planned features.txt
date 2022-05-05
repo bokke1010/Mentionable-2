@@ -22,3 +22,7 @@ Low priority, often either complicated or less useful:
     ping message / description (that can be added when using /ping)
     timed responses? possibly, quite a rabbit hole
 
+TODO
+    sql injection protection
+    permission system
+    cooldown checks
