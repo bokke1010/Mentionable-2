@@ -36,6 +36,15 @@ struct Handler {
 
 impl Handler {
 
+    async fn send_text(text: String, command: &ApplicationCommandInteraction, ctx: &Context) {
+        command.create_interaction_response(&ctx.http, |response| {
+            response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(text))
+        })
+        .await.expect("Failed to send text response.");
+    }
+
     async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: u64 = command.guild_id.expect("No guild data found").0;
         // let member_id: u64 = command.member.as_ref().expect("Interaction not triggered by a member").user.id.0;
@@ -70,12 +79,7 @@ impl Handler {
             content += format!("\nThe list {} does not exist.", falselist).as_str();
         }
 
-        command.create_interaction_response(&ctx.http, |response| {
-            response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-        })
-        .await.expect("Failed to send ping response.");
+        Handler::send_text(content, command, ctx).await;
     }
 
     fn add_member(&self, guild_id: u64, list_name: &str, member_id: u64) -> bool {
@@ -122,12 +126,7 @@ impl Handler {
                 content += format!("\nFailed to add user to list {}", list_name_str).as_str();
             }
         }
-        command.create_interaction_response(&ctx.http, |response| {
-            response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-        })
-        .await.expect("Failed to send join response.");
+        Handler::send_text(content, command, ctx).await;
     }
 
     async fn handle_leave(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -177,12 +176,7 @@ impl Handler {
             }
         }
 
-        command.create_interaction_response(&ctx.http, |response| {
-            response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-        })
-        .await.expect("Failed to send leave response.");
+        Handler::send_text(content, command, ctx).await;
     }
 
     async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -222,12 +216,7 @@ impl Handler {
             }
         }
 
-        command.create_interaction_response(&ctx.http, |response| {
-            response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-        })
-        .await.expect("Failed to send leave response.");
+        Handler::send_text(content, command, ctx).await;
     }
 
     async fn handle_get(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -279,12 +268,7 @@ impl Handler {
             }
         }
 
-        command.create_interaction_response(&ctx.http, |response| {
-            response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-        })
-        .await.expect("Failed to send get response.");
+        Handler::send_text(content, command, ctx).await;
     }
 
     async fn handle_invalid(&self, _command: &ApplicationCommandInteraction) {
