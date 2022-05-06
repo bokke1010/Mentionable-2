@@ -4,7 +4,7 @@ High priority, required for initial release:
         this might make #bot-channel largely irrelevant due to 1-on-1 interactions
         May want to turn this off in some channels
     buttons for next / previous list page
-    thread support
+  - thread support
 
 Medium priority, you can expect these in the initial release:
     buttons for proposed list instead of reactions
@@ -23,6 +23,5 @@ Low priority, often either complicated or less useful:
     timed responses? possibly, quite a rabbit hole
 
 TODO
-    sql injection protection
     permission system
     cooldown checks

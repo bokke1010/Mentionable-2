@@ -78,11 +78,15 @@ impl Handler {
         .await.expect("Failed to send ping response.");
     }
 
-    fn add_member(&self, guild_id: u64, list_name: &str, member_id: u64) {
+    fn add_member(&self, guild_id: u64, list_name: &str, member_id: u64) -> bool {
         if let Ok(mut x) = self.db.clone().lock() {
-            let list_id = x.get_list_id_by_name(list_name, guild_id).unwrap();
-            x.add_member(member_id, list_id).expect("Failed to add member to list");
+            let res_list_id = x.get_list_id_by_name(list_name, guild_id);
+            if let Ok(list_id) = res_list_id {
+                x.add_member(member_id, list_id).expect("Failed to add member to list");
+                return true;
+            }
         }
+        return false;
     }
 
     fn remove_member(&self, guild_id: u64, list_name: &str, member_id: u64) -> Result<bool, &str> {
@@ -112,8 +116,11 @@ impl Handler {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
             
-            self.add_member(guild_id, list_name_str, member_id);
-            content += format!("\nAdded to list {}", list_name_str).as_str();
+            if self.add_member(guild_id, list_name_str, member_id) {
+                content += format!("\nAdded to list {}", list_name_str).as_str();
+            } else {
+                content += format!("\nFailed to add user to list {}", list_name_str).as_str();
+            }
         }
         command.create_interaction_response(&ctx.http, |response| {
             response
