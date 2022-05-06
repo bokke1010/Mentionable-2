@@ -1,5 +1,5 @@
 High priority, required for initial release:
-    slash commands (please)
+  - slash commands (please)
         also includes private responses if, for example, the cooldown doesn't allow a ping yet (Ephemeral)
         this might make #bot-channel largely irrelevant due to 1-on-1 interactions
         May want to turn this off in some channels
@@ -9,9 +9,9 @@ High priority, required for initial release:
 Medium priority, you can expect these in the initial release:
     buttons for proposed list instead of reactions
     Add message links to +listProposals
-    list search / filter
+  - list search / filter
     member join / leave responses
-    list aliases
+  - list aliases
     neater formatting, possibly more embeds
     context menu for ping reply to
     proposal form, including description?

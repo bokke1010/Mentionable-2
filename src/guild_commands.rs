@@ -179,6 +179,24 @@ pub mod guild_commands {
                                 .required(false)
                         })
                 })
+                .create_application_command(|command| {
+                    command
+                        .name("alias")
+                        .description("Add more names to a list")
+                        .create_option(|option| {
+                            option
+                                .name("name")
+                                .description("A name a list is already known under")
+                                .kind(ApplicationCommandOptionType::String)
+                                .required(true)
+                        }).create_option(|option| {
+                            option
+                                .name("alias")
+                                .description("new alternative name")
+                                .kind(ApplicationCommandOptionType::String)
+                                .required(true)
+                        })
+                })
                 .create_application_command(|command| { // Only if proposals are enabled
                     command
                         .name("propose")

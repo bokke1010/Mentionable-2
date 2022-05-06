@@ -35,41 +35,6 @@ struct Handler {
 }
 
 impl Handler {
-    
-    // async fn handle_join(&self, command: &ApplicationCommandInteraction) {
-    //     // let options = command
-    //     //     .data
-    //     //     .options
-    //     //     .get(0)
-    //     //     .expect("Expected user option")
-    //     //     .resolved
-    //     //     .as_ref()
-    //     //     .expect("Expected user object");
-    
-    //     // let response = {
-    //     //     if let ApplicationCommandInteractionDataOptionValue::User(user, _member) =
-    //     //         options
-    //     //     {
-    //     //         format!("{}'s id is {}", user.tag(), user.id)
-    //     //     } else {
-    //     //         "Please provide a valid user".to_string()
-    //     //     }
-    //     // };
-    //     unsafe {
-    //         TEST_VALUE+= 1;
-    //     }
-
-    //     if let Err(why) = command
-    //         .create_interaction_response(&ctx.http, |response| {
-    //             response
-    //                 .kind(InteractionResponseType::ChannelMessageWithSource)
-    //                 .interaction_response_data(|message| message.content(content))
-    //         })
-    //         .await
-    //     {
-    //         println!("Cannot respond to slash command: {}", why);
-    //     }
-    // }
 
     async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: u64 = command.guild_id.expect("No guild data found").0;
@@ -98,6 +63,8 @@ impl Handler {
             for member in members {
                 content += format!("<@{}>, ", member).as_str();
             }
+        } else if invalid_lists.len() == 0 {
+            content += "These lists are empty.";
         }
         for falselist in invalid_lists {
             content += format!("\nThe list {} does not exist.", falselist).as_str();
@@ -195,10 +162,56 @@ impl Handler {
         let mut content =  format!("Creating list {}.", list_name);
         
         if let Ok(mut x) = self.db.clone().lock() {
-            if !x.list_exists(guild_id, list_name) {
-                x.add_list(guild_id, list_name.to_string(), "".to_string()).expect("list creation failed");
+
+            match x.get_list_id_by_name(list_name, guild_id) {
+                Ok(_) => content = "This list already exists.".to_string(),
+                Err(rusqlite::Error::QueryReturnedNoRows) => x.add_list(guild_id, list_name.to_string(), "".to_string()).expect("list creation failed"),
+                a => {a.unwrap();},
+            }
+        }
+
+        command.create_interaction_response(&ctx.http, |response| {
+            response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(content))
+        })
+        .await.expect("Failed to send leave response.");
+    }
+
+    async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: u64 = command.guild_id.expect("No guild data found").0;
+        let list_name: &str = &command
+            .data
+            .options
+            .get(0)
+            .expect("No list name given")
+            .value
+            .as_ref()
+            .expect("List name argument has no value")
+            .as_str()
+            .expect("list name is not a valid str.");
+        let list_alias: &str = &command
+            .data
+            .options
+            .get(1)
+            .expect("No list alias given")
+            .value
+            .as_ref()
+            .expect("List alias argument has no value")
+            .as_str()
+            .expect("list alias is not a valid str.");
+
+        let mut content = String::new();
+        if let Ok(mut x) = self.db.clone().lock() {
+            let res_id = x.get_list_id_by_name(list_name, guild_id);
+
+            if let Ok(id) = res_id {
+                x.add_alias(id, list_alias).unwrap();
+                content = format!("Added alias {} to list {}.", list_alias, list_name);
+            } else if Err(rusqlite::Error::QueryReturnedNoRows) == res_id {
+                content = format!("There is no list named {} to alias to.", list_alias);
             } else {
-                content = "This list already exists.".to_string();
+                res_id.unwrap();
             }
         }
 
@@ -286,6 +299,7 @@ impl EventHandler for Handler {
                 "create" => self.handle_create(&command, &ctx).await,
                 "get" => self.handle_get(&command, &ctx).await,
                 "list" => self.handle_list(&command, &ctx).await,
+                "alias" => self.handle_alias(&command, &ctx).await,
                 // "propose" => "Nope".to_string(),
                 // "list_proposals" => "Nope".to_string(),
                 // // admin commandsw

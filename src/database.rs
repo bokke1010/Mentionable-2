@@ -106,6 +106,11 @@ pub mod data_access {
                 general_propose     INTEGER DEFAULT 1 CHECK( general_propose = 0 OR general_propose = 1 ), \
                 propose_threshold   INTEGER DEFAULT 8 CHECK( propose_threshold > 0 ), \
                 propose_timeout     INTEGER DEFAULT 86400 CHECK( propose_timeout > 2 ));\n\
+            CREATE TABLE IF NOT EXISTS alias ( \
+                id                  INTEGER PRIMARY KEY ASC, \
+                list_id             INTEGER REFERENCES lists(id), \
+                name                TEXT NOT NULL, \
+                UNIQUE(list_id, name) );\n\
             CREATE TABLE IF NOT EXISTS memberships ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 user_id             INTEGER NOT NULL, \
@@ -113,13 +118,47 @@ pub mod data_access {
             CREATE TABLE IF NOT EXISTS lists ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER REFERENCES guilds(id), \
-                name                TEXT NOT NULL, \
                 description         TEXT, \
                 cooldown            INTEGER DEFAULT 0 CHECK( cooldown >= 0 ), \
                 restricted_join     INTEGER DEFAULT 0 CHECK( restricted_join >= -1 AND restricted_join <= 1 ), \
                 restricted_ping     INTEGER DEFAULT 0 CHECK( restricted_ping >= -1 AND restricted_ping <= 1 ), \
-                visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1), \
-                UNIQUE (name, guild_id) );";
+                visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1));\n\
+            CREATE TABLE IF NOT EXISTS role_settings ( \
+                id INTEGER PRIMARY KEY ASC, \
+                guild_id INTEGER NOT NULL REFERENCES guilds(id), \
+                roleID INTEGER NOT NULL, \
+                override_propose INTEGER DEFAULT -1 CHECK( override_propose >= -1 AND override_propose <= 1), \
+                override_canping INTEGER DEFAULT -1 CHECK( override_canping >= -1 AND override_canping <= 1), \
+                override_cooldown INTEGER DEFAULT -1 CHECK( override_cooldown >= -1) );\n\
+            CREATE TABLE IF NOT EXISTS channel_settings ( \
+                channel_id INTEGER PRIMARY KEY, \
+                public_commands INTEGER DEFAULT 0, \
+                override_mentioning INTEGER DEFAULT -1, \
+                override_propose INTEGER DEFAULT -1 );\n\
+            CREATE TABLE IF NOT EXISTS log_role ( \
+                id INTEGER PRIMARY KEY, \
+                guild_id INTEGER REFERENCES guilds(id), \
+                role_id INTEGER NOT NULL, \
+                type INTEGER, \
+                channelID INTEGER, \
+                message text );\n\
+            CREATE TABLE IF NOT EXISTS log_role_condition ( \
+                id INTEGER PRIMARY KEY ASC, \
+                rolelogID INTEGER NOT NULL REFERENCES rolelog(id), \
+                invert INTEGER DEFAULT 0, \
+                type INTEGER DEFAULT 0, \
+                acomp_id INTEGER);\n\
+            CREATE TABLE IF NOT EXISTS log_message ( \
+                id INTEGER PRIMARY KEY ASC, \
+                type INTEGER DEFAULT 0, \
+                acomp_id INTEGER, \
+                destination_channel INTEGER );\n\
+            CREATE TABLE IF NOT EXISTS proposals ( \
+                messageID INTEGER PRIMARY KEY, \
+                guild_id INTEGER NOT NULL REFERENCES guilds(id), \
+                channelID INTEGER NOT NULL, \
+                timestamp INTEGER NOT NULL, \
+                list_id INTEGER NOT NULL REFERENCES lists(id) );";
             self.db.execute_batch(statement)
         }
 
@@ -143,19 +182,15 @@ pub mod data_access {
         }
 
         pub fn add_list(&mut self, guild_id: u64, name: String, description: String) -> Result<(),Error> {
-            self.db.execute("INSERT INTO lists (guild_id, name, description) VALUES (?1, ?2, ?3)", params![guild_id, name, description])?;
+            self.db.execute("INSERT INTO lists (guild_id, description) VALUES (?1, ?2)", params![guild_id, description])?;
+            let list_id = self.db.last_insert_rowid();
+            self.db.execute("INSERT INTO alias (list_id, name) VALUES (?1, ?2)", params![list_id, name])?;
             Ok(())
         }
 
-        pub fn list_exists(&mut self, guild_id: u64, name: &str) -> bool {
-            self.db.query_row(
-                "SELECT EXISTS (SELECT id FROM lists WHERE name=?1 AND guild_id=?2)",
-                params![name, guild_id],
-                |row| match row.get(0).expect("No value in row from membership exist query") {
-                    1 => Ok(true),
-                    _ => Ok(false),
-                }
-            ).expect("Unexpected database error when checking membership existance")
+        pub fn add_alias(&mut self, list_id: u64, name: &str) -> Result<(), Error> {
+            self.db.execute("INSERT INTO alias (list_id, name) VALUES (?1, ?2)", params![list_id, name])?;
+            Ok(())
         }
 
         pub fn has_member(&mut self, member_id: u64, list_id: u64) -> bool {
@@ -180,11 +215,12 @@ pub mod data_access {
         }
 
         pub fn get_lists_by_search(&mut self, guild_id: u64, start: usize, amount: usize, filter: &str) -> Result<Vec<structures::PingList>, Error> {
-            let lists_query = "SELECT name, description, visible, restricted_join, restricted_ping, cooldown \
-                FROM lists \
+            let lists_query = "SELECT alias.name, lists.description, lists.visible, lists.restricted_join, lists.restricted_ping, lists.cooldown \
+                FROM lists, alias \
                 WHERE lists.guild_id=:guid \
-                AND name LIKE '%' || :filter || '%' \
-                ORDER BY name ASC \
+                AND alias.name LIKE '%' || :filter || '%' \
+                AND alias.list_id = lists.id \
+                ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
             let mut stmt = self.db.prepare(lists_query)?;
             let mut rows = stmt.query(named_params! { ":guid": guild_id, ":filter": filter, ":amt": amount, ":start": start })?;
@@ -224,11 +260,11 @@ pub mod data_access {
         }
 
         pub fn get_list_id_by_name(&mut self, list_name: &str, guild_id: u64) -> Result<u64,Error> {
-            self.db.query_row("SELECT id FROM lists WHERE name=?1 AND guild_id=?2", params![list_name, guild_id], |row| row.get(0))
+            self.db.query_row("SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2", params![list_name, guild_id], |row| row.get(0))
         }
 
         pub fn get_list_name_by_id(&mut self, list_id: u64, guild_id: u64) -> Result<String, Error> {
-            self.db.query_row("SELECT name FROM lists WHERE id=?1 AND guild_id=?2", params![list_id, guild_id], |row| row.get::<usize, String>(0))
+            self.db.query_row("SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND lists.guild_id=?2 AND alias.list_id=lists.id", params![list_id, guild_id], |row| row.get::<usize, String>(0))
         }
     }
 }
