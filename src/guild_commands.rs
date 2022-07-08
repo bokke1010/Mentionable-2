@@ -1,22 +1,21 @@
-
 pub mod guild_commands {
 
     use serenity::{
         model::{
             id::GuildId,
-            interactions::{
-                application_command::{
-                    ApplicationCommand,
-                    ApplicationCommandOptionType,
-                    // ApplicationCommandType,
-                },
+            interactions::application_command::{
+                ApplicationCommand,
+                ApplicationCommandOptionType,
+                // ApplicationCommandType,
             },
         },
         prelude::*,
     };
 
-
-    pub async fn add_all_application_commands(gid: &mut GuildId, ctx: Context) -> Vec<ApplicationCommand> {
+    pub async fn add_all_application_commands(
+        gid: &mut GuildId,
+        ctx: Context,
+    ) -> Vec<ApplicationCommand> {
         match gid.set_application_commands(&ctx.http, |commands| {
             commands
                 .create_application_command(|command| { //ANCHOR ping command
@@ -29,6 +28,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(ApplicationCommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -36,6 +36,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(ApplicationCommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -43,6 +44,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(ApplicationCommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -50,6 +52,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(ApplicationCommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -57,6 +60,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(ApplicationCommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                 })
                 // .create_application_command(|command| { //ANCHOR ping context
@@ -200,7 +204,7 @@ pub mod guild_commands {
                 .create_application_command(|command| { // Only if proposals are enabled
                     command
                         .name("propose")
-                        .description("Propose a lists")
+                        .description("Propose a list")
                         .create_option(|option| {
                             option
                                 .name("name")
@@ -213,6 +217,19 @@ pub mod guild_commands {
                     command
                         .name("list_proposals")
                         .description("See proposed lists")
+                })
+                .create_application_command(|command| { // Only if proposals are enabled
+                    command
+                        .name("cancel_proposal")
+                        .description("Cancel a proposed list")
+                        .create_option(|option| {
+                            option
+                                .name("name")
+                                .description("The name for this proposal")
+                                .kind(ApplicationCommandOptionType::String)
+                                .required(true)
+                                .set_autocomplete(true)
+                        })
                 })
                 .create_application_command(|command| { // mod only
                     command

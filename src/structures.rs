@@ -1,13 +1,14 @@
 pub mod structures {
 
+    use serenity::model::id::GuildId;
 
     pub struct PingList {
-        pub guild_id: u64,
-        pub name: String,
+        pub id: u64,
+        pub guild_id: GuildId,
         pub description: String,
         pub cooldown: u64,
         pub restricted_join: bool,
         pub restricted_ping: bool,
-        pub visible: bool
+        pub visible: bool,
     }
 }
