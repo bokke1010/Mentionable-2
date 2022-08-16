@@ -1,10 +1,9 @@
-use std::cmp::{max, min};
 use std::{
+    cmp::{max, min},
     env,
     sync::{Arc, Mutex},
 };
 
-use serenity::model::prelude::message_component::MessageComponentInteraction;
 use serenity::{
     async_trait,
     builder::{
@@ -21,21 +20,48 @@ use serenity::{
             message_component::ButtonStyle,
             Interaction, InteractionResponseType,
         },
+        prelude::message_component::MessageComponentInteraction,
     },
     prelude::*,
 };
 
 mod structures;
-use structures::*;
+use structures::structures::ListId;
 
 mod guild_commands;
 use crate::guild_commands::guild_commands::add_all_application_commands;
 mod database;
 use database::data_access::Database;
 
-struct Handler {
-    db: Arc<Mutex<Database>>,
+struct DB;
+struct BotData {
+    database: Arc<Mutex<Database>>,
+    global: std::collections::HashMap<GuildId, u64>,
+    local: std::collections::HashMap<ListId, u64>,
 }
+
+impl TypeMapKey for DB {
+    type Value = BotData;
+}
+
+enum ListInvalidReasons {
+    OnLocalCooldown,
+    OnGlobalCooldown,
+    GuildRestrictPing,
+    ChannelRestrictPing,
+    ListRestrictPing,
+    DoesNotExist,
+    RoleRestrictPing,
+}
+
+enum CommandInvalidReasons {
+    ChannelRestriction,
+    GuildRestriction,
+    RoleRestriction,
+    DoesNotExist,
+}
+
+struct Handler;
 
 impl Handler {
     fn can_manage_messages(command: &ApplicationCommandInteraction) -> bool {
@@ -59,15 +85,25 @@ impl Handler {
 
     async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        let channel_id = command.channel_id;
         let member = command.member.as_ref().unwrap();
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
         let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
+        let mut list_ids: Vec<ListId> = vec![];
         let mut members: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-        let mut invalid_lists: Vec<String> = vec![];
-        if let Ok(mut x) = self.db.clone().lock() {
-            let mut override_canping = 0;
+        let mut invalid_lists: Vec<(String, ListInvalidReasons)> = vec![];
+
+        let mut data = ctx.data.write().await;
+        let BotData {
+            database: db,
+            global,
+            local,
+        } = data.get_mut::<DB>().unwrap();
+        let timestamp = serenity::model::Timestamp::now().unix_timestamp() as u64;
+        if let Ok(mut x) = db.clone().lock() {
+            let mut override_canping = if member_admin { 2 } else { 0 };
             let mut override_cooldown = -1;
             for role_id in role_ids {
                 let (_, role_canping, role_cooldown) = x.get_role_permissions(guild_id, *role_id);
@@ -80,10 +116,20 @@ impl Handler {
             }
 
             let (general_cooldown, general_canping, pingcooldown) = x.get_guild_ping_data(guild_id);
+            let (_, channel_ping_rule, _) = x.get_channel_permissions(guild_id, channel_id);
+            let channel_restrict_ping = channel_ping_rule == 1;
+            if override_canping == 1 {
+                invalid_lists.push(("all".to_string(), ListInvalidReasons::RoleRestrictPing));
+            } else if !general_canping && override_canping == 0 {
+                invalid_lists.push(("all".to_string(), ListInvalidReasons::GuildRestrictPing));
+            } else if channel_restrict_ping && override_canping == 0 {
+                invalid_lists.push(("".to_string(), ListInvalidReasons::ChannelRestrictPing));
+            }
 
-            if override_canping == 1 || (!general_canping && override_canping == 0) {
-                //TODO: Send return message
-                return;
+            let last_global = global.entry(guild_id).or_insert(0);
+
+            if general_cooldown && *last_global + (pingcooldown as u64) >= timestamp {
+                invalid_lists.push(("all".to_string(), ListInvalidReasons::OnGlobalCooldown));
             }
 
             for list_name in list_names {
@@ -91,29 +137,68 @@ impl Handler {
                 let list_name = list_name.as_str().unwrap();
 
                 if let Ok(list_id) = x.get_list_id_by_name(list_name, guild_id) {
+                    let last_time = local.entry(list_id).or_insert(0);
                     let (list_cooldown, _, list_restrict_ping) = x.get_list_permissions(list_id);
+
                     if list_restrict_ping && !member_admin {
-                        //TODO: add message for restricted list.
+                        invalid_lists
+                            .push((list_name.to_string(), ListInvalidReasons::ListRestrictPing));
                         continue;
                     }
-                    members.extend(x.get_members_in_list(guild_id, list_id).unwrap());
+
+                    if *last_time + (list_cooldown as u64) <= timestamp {
+                        invalid_lists
+                            .push((list_name.to_string(), ListInvalidReasons::OnLocalCooldown));
+                        continue;
+                    }
+                    members.extend(x.get_members_in_list(list_id).unwrap());
+                    list_ids.push(list_id);
                 } else {
-                    invalid_lists.push(list_name.to_string());
+                    invalid_lists.push((list_name.to_string(), ListInvalidReasons::DoesNotExist));
                 }
             }
         }
-
         let mut content = String::new();
-        if members.len() > 0 {
-            content = format!("Mentioning {} members:\n", members.len());
-            for member in members {
-                content += format!("<@{}>, ", member).as_str();
+        if invalid_lists.len() == 0 {
+            global.insert(guild_id, timestamp);
+            for list_id in list_ids {
+                local.insert(list_id, timestamp);
             }
-        } else if invalid_lists.len() == 0 {
-            content += "These lists are empty.";
-        }
-        for falselist in invalid_lists {
-            content += format!("\nThe list {} does not exist.", falselist).as_str();
+
+            if members.len() > 0 {
+                content = format!("Mentioning {} members:\n", members.len());
+                for member in members {
+                    content += format!("<@{}>, ", member).as_str();
+                }
+            } else {
+                content += "These lists are empty.";
+            }
+        } else {
+            for falselist in invalid_lists {
+                content += match falselist.1 {
+                    ListInvalidReasons::ChannelRestrictPing => {
+                        format!("\nPings are not allowed in this channel.")
+                    }
+                    ListInvalidReasons::DoesNotExist => {
+                        format!("\nThe lsit {} does not exist.", falselist.0)
+                    }
+                    ListInvalidReasons::GuildRestrictPing => {
+                        format!("\nYou do not have permission to ping in this server.")
+                    }
+                    ListInvalidReasons::ListRestrictPing => {
+                        format!("\nThe list {} cannot be pinged.", falselist.0)
+                    }
+                    ListInvalidReasons::OnGlobalCooldown => {
+                        format!("\nAnother ping has happed recently, please try again later.")
+                    }
+                    ListInvalidReasons::OnLocalCooldown => {
+                        format!("\nThe list {} has been pinged recently, please try again later or exclude this list.", falselist.0)
+                    }
+                    ListInvalidReasons::RoleRestrictPing => {
+                        format!("\n")
+                    }
+                }.as_str()
+            }
         }
 
         Handler::send_text(content, command, ctx).await;
@@ -122,6 +207,12 @@ impl Handler {
     async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
         let guild_id = autocomplete.guild_id.expect("No guild data found");
         const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
+        let member_admin = member
+            .permissions
+            .unwrap()
+            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.focused {
@@ -130,9 +221,12 @@ impl Handler {
         }
         let mut aliases: Vec<String> = Vec::new();
 
-        if let Ok(mut x) = self.db.clone().lock() {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             aliases = x
-                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter)
+                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
                 .unwrap();
         }
         autocomplete
@@ -146,10 +240,25 @@ impl Handler {
             .unwrap();
     }
 
-    fn add_member(&self, guild_id: GuildId, list_name: &str, member_id: UserId) -> bool {
-        if let Ok(mut x) = self.db.clone().lock() {
+    async fn add_member(
+        &self,
+        guild_id: GuildId,
+        list_name: &str,
+        member_id: UserId,
+        as_admin: bool,
+        ctx: &Context,
+    ) -> bool {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        // member_admin = Handler::can_manage_messages(command);
+
+        if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Ok(list_id) = res_list_id {
+                let (_, restricted_join, _) = x.get_list_permissions(list_id);
+                if restricted_join || as_admin {
+                    return false;
+                }
                 x.add_member(member_id, list_id)
                     .expect("Failed to add member to list");
                 return true;
@@ -158,13 +267,18 @@ impl Handler {
         return false;
     }
 
-    fn remove_member(
+    async fn remove_member(
         &self,
         guild_id: GuildId,
         list_name: &str,
         member_id: UserId,
+        as_admin: bool,
+        ctx: &Context,
     ) -> Result<bool, &str> {
-        if let Ok(mut x) = self.db.clone().lock() {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             // Check membership...
             let get_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Ok(list_id) = get_list_id {
@@ -188,7 +302,31 @@ impl Handler {
             .expect("Interaction not triggered by a member")
             .user
             .id;
+        let member_admin = Handler::can_manage_messages(command);
         let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
+        let mut command_result: Option<CommandInvalidReasons> = None;
+
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+
+        if let Ok(x) = db.clone().lock() {
+            let (channel_join, _, _) = x.get_channel_permissions(guild_id, command.channel_id);
+            let channel_restrict_join = channel_join == 1;
+            if channel_restrict_join && !member_admin {
+                command_result = Some(CommandInvalidReasons::ChannelRestriction);
+            }
+        }
+
+        if let Some(invalid_reason) = command_result {
+            let content = match invalid_reason {
+                CommandInvalidReasons::ChannelRestriction => {
+                    format!("This command cannot be used in this channel.")
+                }
+                _ => format!("Internal error"),
+            };
+            Handler::send_text(content, command, ctx).await;
+            return;
+        }
 
         let mut content = format!(
             "Attempting to add user with id {} to {} lists:",
@@ -199,7 +337,10 @@ impl Handler {
         for list_name in list_names {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
-            if self.add_member(guild_id, list_name_str, member_id) {
+            if self
+                .add_member(guild_id, list_name_str, member_id, member_admin, ctx)
+                .await
+            {
                 content += format!("\nAdded to list {}", list_name_str).as_str();
             } else {
                 content += format!("\nFailed to add user to list {}", list_name_str).as_str();
@@ -216,6 +357,7 @@ impl Handler {
             .expect("Interaction not triggered by a member")
             .user
             .id;
+        let as_admin = Handler::can_manage_messages(command);
         let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
 
         let mut content = format!(
@@ -228,7 +370,8 @@ impl Handler {
             let list_name_str = list_name_val.as_str().unwrap();
 
             if self
-                .remove_member(guild_id, list_name_str, member_id)
+                .remove_member(guild_id, list_name_str, member_id, as_admin, ctx)
+                .await
                 .expect("Failed to remove member")
             {
                 content += format!("\nRemoved from list {}", list_name_str).as_str();
@@ -257,9 +400,12 @@ impl Handler {
             .as_str()
             .expect("list name is not a valid str.");
 
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
         let mut content = format!("Creating list {}.", list_name);
 
-        if let Ok(mut x) = self.db.clone().lock() {
+        if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
                 Ok(_) => content = "This list already exists.".to_string(),
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -299,8 +445,11 @@ impl Handler {
             .as_str()
             .expect("list alias is not a valid str.");
 
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
         let mut content = String::new();
-        if let Ok(mut x) = self.db.clone().lock() {
+        if let Ok(mut x) = db.clone().lock() {
             let res_id = x.get_list_id_by_name(list_name, guild_id);
 
             if let Ok(id) = res_id {
@@ -324,8 +473,11 @@ impl Handler {
             .expect("Interaction not triggered by a member")
             .user
             .id;
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         let mut content = format!("You are in the following lists:");
-        if let Ok(mut x) = self.db.clone().lock() {
+        if let Ok(mut x) = db.clone().lock() {
             let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
             for list_id in list_ids {
                 let list_names = x.get_list_names_by_id(list_id, guild_id).unwrap();
@@ -336,13 +488,13 @@ impl Handler {
         Handler::send_text(content, command, ctx).await;
     }
 
-    fn compose_list(
+    async fn compose_list(
         &self,
         guild_id: GuildId,
         page: i64,
         filter: String,
+        ctx: &Context,
     ) -> (CreateEmbed, Option<CreateActionRow>) {
-        let mut embed = CreateEmbed::default();
         const PAGESIZE: usize = 20;
         let succes: bool;
         let mut maxlists: usize = 0;
@@ -352,7 +504,10 @@ impl Handler {
         let page_count: usize;
         let mut visible_lists: Vec<(String, String)> = Vec::new();
 
-        if let Ok(mut x) = self.db.clone().lock() {
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             maxlists = x.count_lists_by_search(guild_id, filter.as_str(), false);
             if maxlists > 0 {
                 lists = x
@@ -380,6 +535,7 @@ impl Handler {
                 }
             }
         }
+        let mut embed = CreateEmbed::default();
 
         if maxlists == 0 {
             embed.color((255, 0, 0));
@@ -447,7 +603,7 @@ impl Handler {
             }
         }
 
-        let (embed, action_row) = self.compose_list(guild_id, page, filter);
+        let (embed, action_row) = self.compose_list(guild_id, page, filter, ctx).await;
 
         command
             .create_interaction_response(&ctx.http, |response| {
@@ -478,11 +634,30 @@ impl Handler {
             component.data.custom_id.clone()
         };
 
-        let (embed, _action_row) = self.compose_list(guild_id, page, filter);
+        let (embed, _action_row) = self.compose_list(guild_id, page, filter, ctx).await;
 
         component.defer(&ctx).await.unwrap();
         component
             .edit_original_interaction_response(&ctx.http, |response| response.set_embed(embed))
+            .await
+            .unwrap();
+    }
+
+    async fn handle_configure(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let mut embed = CreateEmbed::default();
+        embed.color((0,0,0)).description("test")
+        .field("Guild-wide", "allow pings\nshared cooldown\nlist cooldown\nunaffected roles", false)
+        .field("Role-specific", "list of role - bool pairs for roles that cannot ping", false)
+        .field("List-specific", "description\ncooldown\nallowpings\nallowjoins\nvisible\naliases", false)
+        .field("channel-specific", "type (membership, mentioning, proposals, information (depends on what's configured as visible)\npermission (neutral, deny, allow)", false)
+        .field("proposal settings", "enable\ntimeout\nthreshold", false)
+        .field("Role respondance", "TODO", false);
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.add_embed(embed))
+            })
             .await
             .unwrap();
     }
@@ -494,7 +669,10 @@ impl Handler {
         let name = command.data.options[0].value.as_ref().unwrap().to_string();
         let proposal_id: u64;
 
-        if let Ok(mut x) = self.db.clone().lock() {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             let timestamp = serenity::model::Timestamp::now().unix_timestamp();
             proposal_id = x
                 .start_proposal(guild_id, &name, "".to_string(), timestamp)
@@ -541,7 +719,11 @@ impl Handler {
         }
         let guild_id = command.guild_id.unwrap();
         let proposal_name = command.data.options[0].value.as_ref().unwrap().to_string();
-        if let Ok(mut x) = self.db.clone().lock() {
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             let list_id = x.get_list_id_by_name(&proposal_name, guild_id).unwrap();
             x.remove_proposal(list_id).unwrap();
         }
@@ -549,8 +731,11 @@ impl Handler {
         Handler::send_text("canceled proposal".to_string(), command, ctx).await;
     }
 
-    fn check_proposal(&self, list_id: u64) {
-        if let Ok(mut x) = self.db.clone().lock() {
+    async fn check_proposal(&self, list_id: ListId, ctx: &Context) {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             let votes = x.get_proposal_votes(list_id);
             let guild_id = x.get_list_guild(list_id).unwrap();
             let vote_threshold = x.get_vote_threshold(guild_id).unwrap();
@@ -571,7 +756,9 @@ impl Handler {
         }
         let mut aliases: Vec<String> = Vec::new();
 
-        if let Ok(mut x) = self.db.clone().lock() {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        if let Ok(mut x) = db.clone().lock() {
             aliases = x
                 .get_proposals_by_search(guild_id, 0, SUGGESTIONS, filter)
                 .unwrap();
@@ -593,10 +780,14 @@ impl Handler {
         ctx: &Context,
     ) {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
-        if let Ok(mut x) = self.db.clone().lock() {
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
             x.vote_proposal(list_id, component.user.id).unwrap();
         }
-        self.check_proposal(list_id);
+        self.check_proposal(list_id, ctx).await;
     }
 }
 
@@ -618,7 +809,7 @@ impl EventHandler for Handler {
                 // "add" => "Nope".to_string(),
                 // "kick" => "Nope".to_string(),
                 // "rename" => "Nope".to_string(),
-                // "configure" => "Nope".to_string(),
+                "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 _ => self.handle_invalid(&command).await,
             };
@@ -656,12 +847,16 @@ impl EventHandler for Handler {
                 .map(|x| x.id.0)
                 .collect::<Vec<u64>>()
         );
-        if let Ok(mut x) = self.db.clone().lock() {
-            for guild in ready.guilds {
-                x.add_guild(guild.id).ok();
+
+        {
+            let mut data = ctx.data.write().await;
+            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            if let Ok(mut x) = db.clone().lock() {
+                for guild in ready.guilds {
+                    x.add_guild(guild.id).ok();
+                }
             }
         }
-        // ApplicationCommand::set_global_application_commands(&ctx.http, |command| command).await.unwrap();
 
         add_all_application_commands(&mut GuildId(466163515103641611), ctx).await;
     }
@@ -672,7 +867,7 @@ async fn main() {
     // Load database
     let database: Database =
         Database::new("database.db".to_string()).expect("Database could not be loaded");
-    let database = Arc::new(Mutex::new(database));
+    let database = Mutex::new(database);
 
     // let args = env::args();
     // let mut wait_type = 0;
@@ -693,6 +888,7 @@ async fn main() {
     // }
 
     // Configure the client with your Discord bot token in the environment.
+    // dotenv::dotenv().expect("Failed to load .env file");
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     // The Application Id is usually the Bot User Id.
@@ -701,7 +897,7 @@ async fn main() {
         .parse()
         .expect("application id is not a valid id");
 
-    let handler = Handler { db: database };
+    let handler = Handler;
 
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::GUILD_MEMBERS
@@ -714,7 +910,15 @@ async fn main() {
         .application_id(application_id)
         .await
         .expect("Error creating client");
-
+    {
+        let mut data = client.data.write().await;
+        let bot_data = BotData {
+            database: Arc::new(database),
+            global: std::collections::HashMap::new(),
+            local: std::collections::HashMap::new(),
+        };
+        data.insert::<DB>(bot_data);
+    }
     // Finally, start a single shard, and start listening to events.
     //
     // Shards will automatically attempt to reconnect, and will perform

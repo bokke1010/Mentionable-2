@@ -1,5 +1,5 @@
 pub mod data_access {
-    use crate::structures::*;
+    use crate::structures::structures::{ListId, PingList};
     use rusqlite::{named_params, params, Connection, Error, Result};
     use serenity::model::id::*;
 
@@ -54,8 +54,8 @@ pub mod data_access {
             CREATE TABLE IF NOT EXISTS channel_settings ( \
                 channel_id          INTEGER PRIMARY KEY, \
                 public_commands     INTEGER DEFAULT 0, \
-                override_mentioning INTEGER DEFAULT -1, \
-                override_propose    INTEGER DEFAULT -1 );\n\
+                override_mentioning INTEGER DEFAULT 0, \
+                override_propose    INTEGER DEFAULT 0 );\n\
             CREATE TABLE IF NOT EXISTS log_role ( \
                 id                  INTEGER PRIMARY KEY, \
                 guild_id            INTEGER REFERENCES guilds(id), \
@@ -108,7 +108,7 @@ pub mod data_access {
             guild_id: GuildId,
             name: &String,
             description: String,
-        ) -> Result<u64, Error> {
+        ) -> Result<ListId, Error> {
             self.db.execute(
                 "INSERT INTO lists (guild_id, description) VALUES (?1, ?2)",
                 params![guild_id.as_u64(), description],
@@ -118,7 +118,7 @@ pub mod data_access {
             Ok(list_id)
         }
 
-        pub fn set_pingable(&mut self, list_id: u64, pingable: bool) -> Result<(), Error> {
+        pub fn set_pingable(&mut self, list_id: ListId, pingable: bool) -> Result<(), Error> {
             self.db.execute(
                 "UPDATE lists SET restricted_ping = ?1 WHERE list_id=?2",
                 params![pingable, list_id],
@@ -126,7 +126,7 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn set_joinable(&mut self, list_id: u64, joinable: bool) -> Result<(), Error> {
+        pub fn set_joinable(&mut self, list_id: ListId, joinable: bool) -> Result<(), Error> {
             self.db.execute(
                 "UPDATE lists SET restricted_join = ?1 WHERE list_id=?2",
                 params![joinable, list_id],
@@ -134,7 +134,7 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn set_visible(&mut self, list_id: u64, visible: bool) -> Result<(), Error> {
+        pub fn set_visible(&mut self, list_id: ListId, visible: bool) -> Result<(), Error> {
             self.db.execute(
                 "UPDATE lists SET visible = ?1 WHERE list_id=?2",
                 params![visible, list_id],
@@ -155,14 +155,14 @@ pub mod data_access {
                 .unwrap()
         }
 
-        pub fn get_list_permissions(&self, list_id: u64) -> (usize, bool, bool) {
+        pub fn get_list_permissions(&self, list_id: ListId) -> (u64, bool, bool) {
             self.db
                 .query_row(
                     "SELECT cooldown, restricted_join, restricted_ping FROM lists WHERE id=?1",
                     params![list_id],
                     |row| {
                         Ok((
-                            row.get::<usize, usize>(0)?,
+                            row.get::<usize, u64>(0)?,
                             row.get::<usize, bool>(1)?,
                             row.get::<usize, bool>(2)?,
                         ))
@@ -187,16 +187,37 @@ pub mod data_access {
                 .unwrap()
         }
 
+        pub fn get_channel_permissions(
+            &self,
+            _guild_id: GuildId,
+            channel_id: ChannelId,
+        ) -> (u64, u64, i64) {
+            self.db
+                .query_row(
+                    "SELECT public_commands, override_mentioning, override_propose FROM channel_settings WHERE channel_id=?1",
+                    params![channel_id.as_u64()],
+                    |row| {
+                        Ok((
+                            row.get::<usize, u64>(0)?,
+                            row.get::<usize, u64>(1)?,
+                            row.get::<usize, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        }
+
         pub fn start_proposal(
             &mut self,
             guild_id: GuildId,
             name: &String,
             description: String,
             timestamp: i64,
-        ) -> Result<u64, Error> {
+        ) -> Result<ListId, Error> {
             // let transaction = self.db.transaction().unwrap();
             let list_id = self.add_list(guild_id, name, description).unwrap();
             self.set_pingable(list_id, false).unwrap();
+            self.set_joinable(list_id, false).unwrap();
             self.set_visible(list_id, false).unwrap();
             self.db.execute(
                 "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
@@ -206,26 +227,16 @@ pub mod data_access {
             Ok(list_id)
         }
 
-        pub fn vote_proposal(&mut self, list_id: u64, member_id: UserId) -> Result<(), Error> {
+        pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
             self.add_member(member_id, list_id).unwrap();
-            self.db.execute(
-                "UPDATE proposals SET votes = votes + 1 WHERE list_id=?1",
-                params![list_id],
-            )?;
             Ok(())
         }
 
-        pub fn get_proposal_votes(&mut self, list_id: u64) -> usize {
-            self.db
-                .query_row(
-                    "SELECT votes FROM proposals WHERE list_id=?1",
-                    params![list_id],
-                    |row| row.get::<usize, usize>(0),
-                )
-                .unwrap_or(0)
+        pub fn get_proposal_votes(&mut self, list_id: ListId) -> usize {
+            self.get_members_in_list(list_id).unwrap().len()
         }
 
-        pub fn get_list_guild(&mut self, list_id: u64) -> Result<GuildId, Error> {
+        pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
             Ok(GuildId(self.db.query_row(
                 "SELECT guild_id FROM lists WHERE id=?1",
                 params![list_id],
@@ -241,13 +252,13 @@ pub mod data_access {
             )
         }
 
-        pub fn remove_proposal(&mut self, list_id: u64) -> Result<(), Error> {
+        pub fn remove_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
             self.db
                 .execute("DELETE FROM proposals WHERE list_id = ?1", params![list_id])?;
             Ok(())
         }
 
-        pub fn add_alias(&mut self, list_id: u64, name: &str) -> Result<(), Error> {
+        pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
             self.db.execute(
                 "INSERT INTO alias (list_id, name) VALUES (?1, ?2)",
                 params![list_id, name],
@@ -255,7 +266,7 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn has_member(&mut self, member_id: UserId, list_id: u64) -> bool {
+        pub fn has_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
             self.db
                 .query_row(
                     "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
@@ -290,7 +301,7 @@ pub mod data_access {
             guild_id: GuildId,
             filter: &str,
             show_hidden: bool,
-        ) -> Result<Vec<structures::PingList>, Error> {
+        ) -> Result<Vec<PingList>, Error> {
             let lists_query = "SELECT lists.id, lists.description, lists.visible, lists.restricted_join, lists.restricted_ping, lists.cooldown \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
@@ -305,7 +316,7 @@ pub mod data_access {
 
             let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
-                lists.push(structures::PingList {
+                lists.push(PingList {
                     id: row.get::<usize, u64>(0)?,
                     guild_id: guild_id,
                     description: row.get::<usize, String>(1)?,
@@ -344,17 +355,19 @@ pub mod data_access {
             start: usize,
             amount: usize,
             filter: &str,
+            show_all: bool,
         ) -> Result<Vec<String>, Error> {
             let lists_query = "SELECT alias.name \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
                 AND alias.list_id = lists.id \
+                AND (!lists.restricted_ping OR :show_all)
                 ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
             let mut stmt = self.db.prepare(lists_query)?;
             let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start }
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all }
             )?;
 
             let mut lists = Vec::new();
@@ -391,13 +404,9 @@ pub mod data_access {
             Ok(lists)
         }
 
-        pub fn get_members_in_list(
-            &mut self,
-            guild_id: GuildId,
-            list_id: u64,
-        ) -> Result<Vec<u64>, Error> {
-            let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=? AND lists.guild_id=?")?;
-            let mut rows = stmt.query(params![list_id, guild_id.as_u64()])?;
+        pub fn get_members_in_list(&mut self, list_id: ListId) -> Result<Vec<u64>, Error> {
+            let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=?")?;
+            let mut rows = stmt.query(params![list_id])?;
             let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
                 lists.push(row.get(0)?);
@@ -405,7 +414,7 @@ pub mod data_access {
             Ok(lists)
         }
 
-        pub fn add_member(&mut self, member_id: UserId, list_id: u64) -> Result<(), Error> {
+        pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> Result<(), Error> {
             self.db.execute(
                 "INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)",
                 params![member_id.as_u64(), list_id],
@@ -413,7 +422,7 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn remove_member(&mut self, member_id: UserId, list_id: u64) -> Result<(), Error> {
+        pub fn remove_member(&mut self, member_id: UserId, list_id: ListId) -> Result<(), Error> {
             self.db.execute(
                 "DELETE FROM memberships WHERE user_id = ?1 AND list_id = ?2",
                 params![member_id.as_u64(), list_id],
@@ -425,16 +434,17 @@ pub mod data_access {
             &mut self,
             list_name: &str,
             guild_id: GuildId,
-        ) -> Result<u64, Error> {
-            self.db.query_row(
+        ) -> Result<ListId, Error> {
+            let id = self.db.query_row(
                 "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
-                params![list_name, guild_id.as_u64()], |row| row.get(0)
-            )
+                params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
+            )?;
+            Ok(id)
         }
 
         pub fn get_list_names_by_id(
             &mut self,
-            list_id: u64,
+            list_id: ListId,
             guild_id: GuildId,
         ) -> Result<Vec<String>, Error> {
             let mut stmt = self.db.prepare("SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND lists.guild_id=?2 AND alias.list_id=lists.id")?;
