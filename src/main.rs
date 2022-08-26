@@ -10,17 +10,20 @@ use serenity::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     },
     model::{
-        gateway::Ready,
-        id::{GuildId, RoleId, UserId},
-        interactions::{
-            application_command::{
-                ApplicationCommandInteraction, ApplicationCommandInteractionDataOption,
+        application::{
+            component::ButtonStyle,
+            interaction::{
+                application_command::{
+                    ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
+                },
+                autocomplete::AutocompleteInteraction,
+                message_component::MessageComponentInteraction,
+                Interaction, InteractionResponseType,
             },
-            autocomplete::AutocompleteInteraction,
-            message_component::ButtonStyle,
-            Interaction, InteractionResponseType,
         },
-        prelude::message_component::MessageComponentInteraction,
+        gateway::Ready,
+        guild::Role,
+        id::{ChannelId, GuildId, RoleId, UserId},
     },
     prelude::*,
 };
@@ -90,7 +93,7 @@ impl Handler {
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
-        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
+        let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut list_ids: Vec<ListId> = vec![];
         let mut members: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         let mut invalid_lists: Vec<(String, ListInvalidReasons)> = vec![];
@@ -195,7 +198,7 @@ impl Handler {
                         format!("\nThe list {} has been pinged recently, please try again later or exclude this list.", falselist.0)
                     }
                     ListInvalidReasons::RoleRestrictPing => {
-                        format!("\n")
+                        format!("One of your roles prevents you from using the ping command.\n")
                     }
                 }.as_str()
             }
@@ -303,7 +306,7 @@ impl Handler {
             .user
             .id;
         let member_admin = Handler::can_manage_messages(command);
-        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
+        let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut command_result: Option<CommandInvalidReasons> = None;
 
         let data = ctx.data.write().await;
@@ -358,7 +361,7 @@ impl Handler {
             .user
             .id;
         let as_admin = Handler::can_manage_messages(command);
-        let list_names: Vec<ApplicationCommandInteractionDataOption> = command.data.options.clone();
+        let list_names: Vec<CommandDataOption> = command.data.options.clone();
 
         let mut content = format!(
             "Attempting to remove user with id {} from {} lists:",
@@ -480,7 +483,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
             for list_id in list_ids {
-                let list_names = x.get_list_names_by_id(list_id, guild_id).unwrap();
+                let list_names = x.get_list_names(list_id, guild_id).unwrap();
                 content += format!("\n{}", list_names.join(", ")).as_str();
             }
         }
@@ -524,7 +527,7 @@ impl Handler {
                             for list_index in page_start..page_end {
                                 page_selection = (page_start, page_end);
                                 visible_lists.push((
-                                    x.get_list_names_by_id(lists[list_index].id, guild_id)
+                                    x.get_list_names(lists[list_index].id, guild_id)
                                         .unwrap()
                                         .join(", "),
                                     lists[list_index].description.clone(),
@@ -644,14 +647,182 @@ impl Handler {
     }
 
     async fn handle_configure(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let as_admin = Handler::can_manage_messages(command);
+        if !as_admin {
+            return;
+        }
+        let guild_id: GuildId = command.guild_id.unwrap();
+
         let mut embed = CreateEmbed::default();
-        embed.color((0,0,0)).description("test")
-        .field("Guild-wide", "allow pings\nshared cooldown\nlist cooldown\nunaffected roles", false)
-        .field("Role-specific", "list of role - bool pairs for roles that cannot ping", false)
-        .field("List-specific", "description\ncooldown\nallowpings\nallowjoins\nvisible\naliases", false)
-        .field("channel-specific", "type (membership, mentioning, proposals, information (depends on what's configured as visible)\npermission (neutral, deny, allow)", false)
-        .field("proposal settings", "enable\ntimeout\nthreshold", false)
-        .field("Role respondance", "TODO", false);
+
+        let subcom = &command.data.options[0];
+
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+        if let Ok(mut x) = db.clone().lock() {
+            match subcom {
+                CommandDataOption { ref name, .. } if name == "show" => {
+                    //TODO: read all these options.
+                    embed.color((0,0,0)).description("test")
+                    .field("Guild-wide", "allow pings\nshared cooldown\nlist cooldown\nunaffected roles", false)
+                    .field("Role-specific", "list of role - bool pairs for roles that cannot ping", false)
+                    .field("List-specific", "description\ncooldown\nallowpings\nallowjoins\nvisible\naliases", false)
+                    .field("channel-specific", "type (membership, mentioning, proposals, information (depends on what's configured as visible)\npermission (neutral, deny, allow)", false)
+                    .field("proposal settings", "enable\ntimeout\nthreshold", false)
+                    .field("Role respondance", "TODO", false);
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "guild" => {
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "allow_ping" => (),
+                            "set_guild_ping_cooldown" => (),
+                            "set_list_ping_cooldown" => (),
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "role" => {
+                    let role_index = options
+                        .iter()
+                        .position(|x| x.name.as_str() == "role")
+                        .expect("No role argument given");
+                    let role_value = options[role_index].resolved.as_ref().unwrap();
+                    let role: RoleId = if let CommandDataOptionValue::Role(ref i) = *role_value {
+                        i.id
+                    } else {
+                        panic!("List argument is not a valid integer")
+                    };
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "disable_propose" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_role_propose(guild_id, role, *b).unwrap();
+                                } else {
+                                    panic!("The parameter disable_propose for configure role is incorrectly configured");
+                                }
+                            }
+                            "disable_ping" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_role_canping(guild_id, role, *b).unwrap();
+                                } else {
+                                    panic!("The parameter disable_ping for configure role is incorrectly configured");
+                                }
+                            }
+                            "exclude_from_cooldown" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_role_cooldown(guild_id, role, *b).unwrap();
+                                } else {
+                                    panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "list" => {
+                    let list_index = options
+                        .iter()
+                        .position(|x| x.name.as_str() == "list")
+                        .expect("No list argument given");
+                    let list_value = options[list_index].resolved.as_ref().unwrap();
+                    let list: ListId = if let CommandDataOptionValue::Integer(ref i) = *list_value {
+                        *i as u64
+                    } else {
+                        panic!("List argument is not a valid integer")
+                    };
+                    //TODO: list by name
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "description" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref b) = *temp {
+                                    x.set_description(list, b).unwrap();
+                                } else {
+                                    panic!("The parameter description for configure list is incorrectly configured");
+                                }
+                            }
+                            "cooldown" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref b) = *temp {
+                                    x.set_cooldown(list, *b as u64).unwrap();
+                                } else {
+                                    panic!("The parameter cooldown for configure list is incorrectly configured");
+                                }
+                            }
+                            "allow_join" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_joinable(list, *b).unwrap();
+                                } else {
+                                    panic!("The parameter allow_join for configure list is incorrectly configured");
+                                }
+                            }
+                            "allow_ping" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_pingable(list, *b).unwrap();
+                                } else {
+                                    panic!("The parameter allow_ping for configure list is incorrectly configured");
+                                }
+                            }
+                            "show" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_visible(list, *b).unwrap();
+                                } else {
+                                    panic!("The parameter show for configure list is incorrectly configured");
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "channel" => {
+                    let channel_index = options
+                        .iter()
+                        .position(|x| x.name.as_str() == "channel")
+                        .expect("No channel argument given");
+                    let channel_value = options[channel_index].resolved.as_ref().unwrap();
+                    let channel: ChannelId =
+                        if let CommandDataOptionValue::Channel(ref i) = *channel_value {
+                            i.id
+                        } else {
+                            panic!("List argument is not a valid integer")
+                        };
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "mentioning" => (),
+                            "proposing" => (),
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "proposals" => {
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "enabled" => (),
+                            "timeout" => (),
+                            "threshold" => (),
+                            _ => (),
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
         command
             .create_interaction_response(&ctx.http, |response| {
                 response

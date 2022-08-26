@@ -8,6 +8,7 @@ pub mod data_access {
     }
 
     impl Database {
+        // ANCHOR Initialization
         pub fn new(database_path: String) -> Result<Database, Error> {
             let conn = Connection::open(database_path)?;
 
@@ -47,22 +48,22 @@ pub mod data_access {
             CREATE TABLE IF NOT EXISTS role_settings ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER NOT NULL REFERENCES guilds(id), \
-                role_id              INTEGER NOT NULL, \
-                override_propose    INTEGER DEFAULT 0 CHECK( override_propose >= 0 AND override_propose <= 2), \
-                override_canping    INTEGER DEFAULT 0 CHECK( override_canping >= 0 AND override_canping <= 2), \
-                override_cooldown   INTEGER DEFAULT -1 CHECK( override_cooldown >= -1) );\n\
+                role_id             INTEGER UNIQUE NOT NULL, \
+                disable_propose     INTEGER DEFAULT 0 CHECK( disable_propose >= 0 AND disable_propose <= 2), \
+                disable_ping        INTEGER DEFAULT 0 CHECK( disable_ping >= 0 AND disable_ping <= 2), \
+                ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
             CREATE TABLE IF NOT EXISTS channel_settings ( \
                 channel_id          INTEGER PRIMARY KEY, \
                 public_commands     INTEGER DEFAULT 0, \
                 override_mentioning INTEGER DEFAULT 0, \
-                override_propose    INTEGER DEFAULT 0 );\n\
+                disable_propose    INTEGER DEFAULT 0 );\n\
             CREATE TABLE IF NOT EXISTS log_role ( \
                 id                  INTEGER PRIMARY KEY, \
                 guild_id            INTEGER REFERENCES guilds(id), \
                 role_id             INTEGER NOT NULL, \
                 type                INTEGER, \
                 channelID           INTEGER, \
-                message text );\n\
+                message             TEXT );\n\
             CREATE TABLE IF NOT EXISTS log_role_condition ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 rolelogID           INTEGER NOT NULL REFERENCES rolelog(id), \
@@ -81,6 +82,7 @@ pub mod data_access {
             self.db.execute_batch(statement)
         }
 
+        //ANCHOR Guild setup
         fn has_guild(&self, guild_id: GuildId) -> bool {
             self.db
                 .query_row(
@@ -103,6 +105,20 @@ pub mod data_access {
             Ok(())
         }
 
+        pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (bool, bool, usize) {
+            self.db
+                .query_row(
+                    "SELECT general_cooldown, general_canping, pingcooldown FROM guilds WHERE id=?1",
+                    params![guild_id.as_u64()],
+                    |row| Ok(
+                    (row.get::<usize, bool>(0)?,
+                    row.get::<usize, bool>(1)?,
+                    row.get::<usize, usize>(2)?))
+                )
+                .unwrap()
+        }
+
+        //ANCHOR List functions
         pub fn add_list(
             &mut self,
             guild_id: GuildId,
@@ -118,6 +134,7 @@ pub mod data_access {
             Ok(list_id)
         }
 
+        //List config
         pub fn set_pingable(&mut self, list_id: ListId, pingable: bool) -> Result<(), Error> {
             self.db.execute(
                 "UPDATE lists SET restricted_ping = ?1 WHERE list_id=?2",
@@ -142,18 +159,30 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (bool, bool, usize) {
-            self.db
-                .query_row(
-                    "SELECT general_cooldown, general_canping, pingcooldown FROM guilds WHERE id=?1",
-                    params![guild_id.as_u64()],
-                    |row| Ok(
-                    (row.get::<usize, bool>(0)?,
-                    row.get::<usize, bool>(1)?,
-                    row.get::<usize, usize>(2)?))
-                )
-                .unwrap()
+        pub fn set_description(&mut self, list_id: ListId, value: &String) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE lists SET description = ?1 WHERE list_id=?2",
+                params![value, list_id],
+            )?;
+            Ok(())
         }
+        pub fn set_cooldown(&mut self, list_id: ListId, value: u64) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE lists SET cooldown = ?1 WHERE list_id=?2",
+                params![value, list_id],
+            )?;
+            Ok(())
+        }
+
+        pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
+            self.db.execute(
+                "INSERT INTO alias (list_id, name) VALUES (?1, ?2)",
+                params![list_id, name],
+            )?;
+            Ok(())
+        }
+
+        //Getters
 
         pub fn get_list_permissions(&self, list_id: ListId) -> (u64, bool, bool) {
             self.db
@@ -171,129 +200,30 @@ pub mod data_access {
                 .unwrap()
         }
 
-        pub fn get_role_permissions(&self, guild_id: GuildId, role_id: RoleId) -> (u64, u64, i64) {
-            self.db
-                .query_row(
-                    "SELECT override_propose, override_canping, override_cooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
-                    params![role_id.as_u64(), guild_id.as_u64()],
-                    |row| {
-                        Ok((
-                            row.get::<usize, u64>(0)?,
-                            row.get::<usize, u64>(1)?,
-                            row.get::<usize, i64>(2)?,
-                        ))
-                    },
-                )
-                .unwrap()
-        }
-
-        pub fn get_channel_permissions(
-            &self,
-            _guild_id: GuildId,
-            channel_id: ChannelId,
-        ) -> (u64, u64, i64) {
-            self.db
-                .query_row(
-                    "SELECT public_commands, override_mentioning, override_propose FROM channel_settings WHERE channel_id=?1",
-                    params![channel_id.as_u64()],
-                    |row| {
-                        Ok((
-                            row.get::<usize, u64>(0)?,
-                            row.get::<usize, u64>(1)?,
-                            row.get::<usize, i64>(2)?,
-                        ))
-                    },
-                )
-                .unwrap()
-        }
-
-        pub fn start_proposal(
+        pub fn get_list_id_by_name(
             &mut self,
+            list_name: &str,
             guild_id: GuildId,
-            name: &String,
-            description: String,
-            timestamp: i64,
         ) -> Result<ListId, Error> {
-            // let transaction = self.db.transaction().unwrap();
-            let list_id = self.add_list(guild_id, name, description).unwrap();
-            self.set_pingable(list_id, false).unwrap();
-            self.set_joinable(list_id, false).unwrap();
-            self.set_visible(list_id, false).unwrap();
-            self.db.execute(
-                "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
-                params![list_id, timestamp],
+            let id = self.db.query_row(
+                "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
+                params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
             )?;
-            // transaction.commit();
-            Ok(list_id)
+            Ok(id)
         }
 
-        pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
-            self.add_member(member_id, list_id).unwrap();
-            Ok(())
-        }
-
-        pub fn get_proposal_votes(&mut self, list_id: ListId) -> usize {
-            self.get_members_in_list(list_id).unwrap().len()
-        }
-
-        pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
-            Ok(GuildId(self.db.query_row(
-                "SELECT guild_id FROM lists WHERE id=?1",
-                params![list_id],
-                |row| row.get::<usize, u64>(0),
-            )?))
-        }
-
-        pub fn get_vote_threshold(&mut self, guild_id: GuildId) -> Result<usize, Error> {
-            self.db.query_row(
-                "SELECT propose_threshold FROM guilds WHERE id=?1",
-                params![guild_id.as_u64()],
-                |row| row.get::<usize, usize>(0),
-            )
-        }
-
-        pub fn remove_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
-            self.db
-                .execute("DELETE FROM proposals WHERE list_id = ?1", params![list_id])?;
-            Ok(())
-        }
-
-        pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
-            self.db.execute(
-                "INSERT INTO alias (list_id, name) VALUES (?1, ?2)",
-                params![list_id, name],
-            )?;
-            Ok(())
-        }
-
-        pub fn has_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
-            self.db
-                .query_row(
-                    "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
-                    params![member_id.as_u64(), list_id],
-                    |row| match row
-                        .get(0)
-                        .expect("No value in row from membership exist query")
-                    {
-                        1 => Ok(true),
-                        _ => Ok(false),
-                    },
-                )
-                .expect("Unexpected database error when checking membership existance")
-        }
-
-        pub fn get_lists_with_member(
+        pub fn get_list_names(
             &mut self,
+            list_id: ListId,
             guild_id: GuildId,
-            member_id: UserId,
-        ) -> Result<Vec<u64>, Error> {
-            let mut stmt = self.db.prepare("SELECT lists.id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.user_id=? AND lists.guild_id=?")?;
-            let mut rows = stmt.query(params![member_id.as_u64(), guild_id.as_u64()])?;
-            let mut lists = Vec::new();
+        ) -> Result<Vec<String>, Error> {
+            let mut stmt = self.db.prepare("SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND lists.guild_id=?2 AND alias.list_id=lists.id")?;
+            let mut rows = stmt.query(params![list_id, guild_id.as_u64()])?;
+            let mut names = Vec::new();
             while let Some(row) = rows.next()? {
-                lists.push(row.get(0)?);
+                names.push(row.get::<usize, String>(0)?);
             }
-            Ok(lists)
+            Ok(names)
         }
 
         pub fn get_lists_by_search(
@@ -362,7 +292,7 @@ pub mod data_access {
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
                 AND alias.list_id = lists.id \
-                AND (!lists.restricted_ping OR :show_all)
+                AND (NOT lists.restricted_ping OR :show_all)
                 ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
             let mut stmt = self.db.prepare(lists_query)?;
@@ -377,29 +307,34 @@ pub mod data_access {
             Ok(lists)
         }
 
-        pub fn get_proposals_by_search(
+        // List memberships
+
+        pub fn has_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
+            self.db
+                .query_row(
+                    "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
+                    params![member_id.as_u64(), list_id],
+                    |row| match row
+                        .get(0)
+                        .expect("No value in row from membership exist query")
+                    {
+                        1 => Ok(true),
+                        _ => Ok(false),
+                    },
+                )
+                .expect("Unexpected database error when checking membership existance")
+        }
+
+        pub fn get_lists_with_member(
             &mut self,
             guild_id: GuildId,
-            start: usize,
-            amount: usize,
-            filter: &str,
-        ) -> Result<Vec<String>, Error> {
-            let lists_query = "SELECT alias.name \
-                FROM lists, alias, proposals \
-                WHERE lists.guild_id=:guid \
-                AND alias.name LIKE '%' || :filter || '%' \
-                AND alias.list_id = lists.id \
-                AND lists.id = proposals.list_id \
-                ORDER BY alias.name ASC \
-                LIMIT :start, :amt";
-            let mut stmt = self.db.prepare(lists_query)?;
-            let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start }
-            )?;
-
+            member_id: UserId,
+        ) -> Result<Vec<u64>, Error> {
+            let mut stmt = self.db.prepare("SELECT lists.id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.user_id=? AND lists.guild_id=?")?;
+            let mut rows = stmt.query(params![member_id.as_u64(), guild_id.as_u64()])?;
             let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
-                lists.push(row.get::<usize, String>(0)?);
+                lists.push(row.get(0)?);
             }
             Ok(lists)
         }
@@ -429,31 +364,174 @@ pub mod data_access {
             )?;
             Ok(())
         }
+        //ANCHOR role functions
 
-        pub fn get_list_id_by_name(
-            &mut self,
-            list_name: &str,
-            guild_id: GuildId,
-        ) -> Result<ListId, Error> {
-            let id = self.db.query_row(
-                "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
-                params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
-            )?;
-            Ok(id)
+        pub fn get_role_permissions(&self, guild_id: GuildId, role_id: RoleId) -> (u64, u64, i64) {
+            self.db
+                .query_row(
+                    "SELECT disable_propose, disable_ping, ignore_gbcooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
+                    params![role_id.as_u64(), guild_id.as_u64()],
+                    |row| {
+                        Ok((
+                            row.get::<usize, u64>(0)?,
+                            row.get::<usize, u64>(1)?,
+                            row.get::<usize, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
         }
 
-        pub fn get_list_names_by_id(
+        fn ensure_role_present(&mut self, guild_id: GuildId, role_id: RoleId) -> Result<(), Error> {
+            self.db.execute(
+                "INSERT OR IGNORE INTO role_settings (guild_id, role_id) VALUES (?1, ?2)",
+                [guild_id.as_u64(), role_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_role_propose(
             &mut self,
-            list_id: ListId,
             guild_id: GuildId,
+            role_id: RoleId,
+            deny: bool,
+        ) -> Result<(), Error> {
+            self.ensure_role_present(guild_id, role_id)?;
+            self.db.execute(
+                "UPDATE role_settings SET disable_propose = ?1 WHERE role_id=?2 AND guild_id=?3",
+                params![deny, guild_id.as_u64(), role_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_role_canping(
+            &mut self,
+            guild_id: GuildId,
+            role_id: RoleId,
+            deny: bool,
+        ) -> Result<(), Error> {
+            self.ensure_role_present(guild_id, role_id)?;
+            self.db.execute(
+                "UPDATE role_settings SET disable_ping = ?1 WHERE role_id=?2 AND guild_id=?3",
+                params![deny, guild_id.as_u64(), role_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_role_cooldown(
+            &mut self,
+            guild_id: GuildId,
+            role_id: RoleId,
+            deny: bool,
+        ) -> Result<(), Error> {
+            self.ensure_role_present(guild_id, role_id)?;
+            self.db.execute(
+                "UPDATE role_settings SET ignore_gbcooldown = ?1 WHERE role_id=?2 AND guild_id=?3",
+                params![deny, guild_id.as_u64(), role_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        //ANCHOR channel functions
+
+        pub fn get_channel_permissions(
+            &self,
+            _guild_id: GuildId,
+            channel_id: ChannelId,
+        ) -> (u64, u64, i64) {
+            self.db
+                .query_row(
+                    "SELECT public_commands, override_mentioning, disable_propose FROM channel_settings WHERE channel_id=?1",
+                    params![channel_id.as_u64()],
+                    |row| {
+                        Ok((
+                            row.get::<usize, u64>(0)?,
+                            row.get::<usize, u64>(1)?,
+                            row.get::<usize, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        }
+
+        //ANCHOR proposal functions
+
+        pub fn start_proposal(
+            &mut self,
+            guild_id: GuildId,
+            name: &String,
+            description: String,
+            timestamp: i64,
+        ) -> Result<ListId, Error> {
+            // let transaction = self.db.transaction().unwrap();
+            let list_id = self.add_list(guild_id, name, description).unwrap();
+            self.set_pingable(list_id, false).unwrap();
+            self.set_joinable(list_id, false).unwrap();
+            self.set_visible(list_id, false).unwrap();
+            self.db.execute(
+                "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
+                params![list_id, timestamp],
+            )?;
+            // transaction.commit();
+            Ok(list_id)
+        }
+
+        pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
+            self.add_member(member_id, list_id).unwrap();
+            Ok(())
+        }
+
+        pub fn get_proposal_votes(&mut self, list_id: ListId) -> usize {
+            self.get_members_in_list(list_id).unwrap().len()
+        }
+
+        pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
+            Ok(GuildId(self.db.query_row(
+                "SELECT guild_id FROM lists WHERE id=?1",
+                params![list_id],
+                |row| row.get::<usize, u64>(0),
+            )?))
+        }
+
+        pub fn get_vote_threshold(&mut self, guild_id: GuildId) -> Result<usize, Error> {
+            self.db.query_row(
+                "SELECT propose_threshold FROM guilds WHERE id=?1",
+                params![guild_id.as_u64()],
+                |row| row.get::<usize, usize>(0),
+            )
+        }
+
+        pub fn remove_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
+            self.db
+                .execute("DELETE FROM proposals WHERE list_id = ?1", params![list_id])?;
+            Ok(())
+        }
+
+        pub fn get_proposals_by_search(
+            &mut self,
+            guild_id: GuildId,
+            start: usize,
+            amount: usize,
+            filter: &str,
         ) -> Result<Vec<String>, Error> {
-            let mut stmt = self.db.prepare("SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND lists.guild_id=?2 AND alias.list_id=lists.id")?;
-            let mut rows = stmt.query(params![list_id, guild_id.as_u64()])?;
-            let mut names = Vec::new();
+            let lists_query = "SELECT alias.name \
+                FROM lists, alias, proposals \
+                WHERE lists.guild_id=:guid \
+                AND alias.name LIKE '%' || :filter || '%' \
+                AND alias.list_id = lists.id \
+                AND lists.id = proposals.list_id \
+                ORDER BY alias.name ASC \
+                LIMIT :start, :amt";
+            let mut stmt = self.db.prepare(lists_query)?;
+            let mut rows = stmt.query(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start }
+            )?;
+
+            let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
-                names.push(row.get::<usize, String>(0)?);
+                lists.push(row.get::<usize, String>(0)?);
             }
-            Ok(names)
+            Ok(lists)
         }
     }
 }
