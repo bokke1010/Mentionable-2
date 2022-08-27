@@ -1,4 +1,5 @@
 pub mod data_access {
+    use crate::structures::structures::PERMISSION;
     use crate::structures::structures::{ListId, PingList};
     use rusqlite::{named_params, params, Connection, Error, Result};
     use serenity::model::id::*;
@@ -42,21 +43,21 @@ pub mod data_access {
                 guild_id            INTEGER REFERENCES guilds(id), \
                 description         TEXT, \
                 cooldown            INTEGER DEFAULT 0 CHECK( cooldown >= 0 ), \
-                restricted_join     INTEGER DEFAULT 0 CHECK( restricted_join >= 0 AND restricted_join <= 2 ), \
-                restricted_ping     INTEGER DEFAULT 0 CHECK( restricted_ping >= 0 AND restricted_ping <= 2 ), \
+                join_permission     INTEGER DEFAULT 0 CHECK( join_permission >= 0 AND join_permission <= 2 ), \
+                ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2 ), \
                 visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1));\n\
             CREATE TABLE IF NOT EXISTS role_settings ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER NOT NULL REFERENCES guilds(id), \
                 role_id             INTEGER UNIQUE NOT NULL, \
-                disable_propose     INTEGER DEFAULT 0 CHECK( disable_propose >= 0 AND disable_propose <= 2), \
-                disable_ping        INTEGER DEFAULT 0 CHECK( disable_ping >= 0 AND disable_ping <= 2), \
+                propose_permission  INTEGER DEFAULT 0 CHECK( propose_permission >= 0 AND propose_permission <= 2), \
+                ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2), \
                 ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
             CREATE TABLE IF NOT EXISTS channel_settings ( \
                 channel_id          INTEGER PRIMARY KEY, \
                 public_commands     INTEGER DEFAULT 0, \
                 override_mentioning INTEGER DEFAULT 0, \
-                disable_propose    INTEGER DEFAULT 0 );\n\
+                propose_permission  INTEGER DEFAULT 0 );\n\
             CREATE TABLE IF NOT EXISTS log_role ( \
                 id                  INTEGER PRIMARY KEY, \
                 guild_id            INTEGER REFERENCES guilds(id), \
@@ -137,7 +138,7 @@ pub mod data_access {
         //List config
         pub fn set_pingable(&mut self, list_id: ListId, pingable: bool) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET restricted_ping = ?1 WHERE list_id=?2",
+                "UPDATE lists SET ping_permission = ?1 WHERE list_id=?2",
                 params![pingable, list_id],
             )?;
             Ok(())
@@ -145,7 +146,7 @@ pub mod data_access {
 
         pub fn set_joinable(&mut self, list_id: ListId, joinable: bool) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET restricted_join = ?1 WHERE list_id=?2",
+                "UPDATE lists SET join_permission = ?1 WHERE list_id=?2",
                 params![joinable, list_id],
             )?;
             Ok(())
@@ -187,7 +188,7 @@ pub mod data_access {
         pub fn get_list_permissions(&self, list_id: ListId) -> (u64, bool, bool) {
             self.db
                 .query_row(
-                    "SELECT cooldown, restricted_join, restricted_ping FROM lists WHERE id=?1",
+                    "SELECT cooldown, join_permission, ping_permission FROM lists WHERE id=?1",
                     params![list_id],
                     |row| {
                         Ok((
@@ -232,7 +233,7 @@ pub mod data_access {
             filter: &str,
             show_hidden: bool,
         ) -> Result<Vec<PingList>, Error> {
-            let lists_query = "SELECT lists.id, lists.description, lists.visible, lists.restricted_join, lists.restricted_ping, lists.cooldown \
+            let lists_query = "SELECT lists.id, lists.description, lists.visible, lists.join_permission, lists.ping_permission, lists.cooldown \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
@@ -250,10 +251,10 @@ pub mod data_access {
                     id: row.get::<usize, u64>(0)?,
                     guild_id: guild_id,
                     description: row.get::<usize, String>(1)?,
-                    visible: row.get::<usize, i32>(2)? == 1,
+                    visible: row.get::<usize, bool>(2)?,
                     cooldown: row.get::<usize, u64>(5)?,
-                    restricted_join: row.get::<usize, i32>(3)? == 1,
-                    restricted_ping: row.get::<usize, i32>(4)? == 1,
+                    join_permission: PERMISSION::fromint(row.get::<usize, u64>(3)?),
+                    ping_permission: PERMISSION::fromint(row.get::<usize, u64>(4)?),
                 });
             }
             Ok(lists)
@@ -292,7 +293,7 @@ pub mod data_access {
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
                 AND alias.list_id = lists.id \
-                AND (NOT lists.restricted_ping OR :show_all)
+                AND (NOT lists.ping_permission OR :show_all)
                 ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
             let mut stmt = self.db.prepare(lists_query)?;
@@ -366,15 +367,19 @@ pub mod data_access {
         }
         //ANCHOR role functions
 
-        pub fn get_role_permissions(&self, guild_id: GuildId, role_id: RoleId) -> (u64, u64, i64) {
+        pub fn get_role_permissions(
+            &self,
+            guild_id: GuildId,
+            role_id: RoleId,
+        ) -> (PERMISSION, PERMISSION, i64) {
             self.db
                 .query_row(
-                    "SELECT disable_propose, disable_ping, ignore_gbcooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
+                    "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
                     params![role_id.as_u64(), guild_id.as_u64()],
                     |row| {
                         Ok((
-                            row.get::<usize, u64>(0)?,
-                            row.get::<usize, u64>(1)?,
+                            PERMISSION::fromint(row.get::<usize, u64>(0)?),
+                            PERMISSION::fromint(row.get::<usize, u64>(1)?),
                             row.get::<usize, i64>(2)?,
                         ))
                     },
@@ -398,7 +403,7 @@ pub mod data_access {
         ) -> Result<(), Error> {
             self.ensure_role_present(guild_id, role_id)?;
             self.db.execute(
-                "UPDATE role_settings SET disable_propose = ?1 WHERE role_id=?2 AND guild_id=?3",
+                "UPDATE role_settings SET propose_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
                 params![deny, guild_id.as_u64(), role_id.as_u64()],
             )?;
             Ok(())
@@ -412,7 +417,7 @@ pub mod data_access {
         ) -> Result<(), Error> {
             self.ensure_role_present(guild_id, role_id)?;
             self.db.execute(
-                "UPDATE role_settings SET disable_ping = ?1 WHERE role_id=?2 AND guild_id=?3",
+                "UPDATE role_settings SET ping_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
                 params![deny, guild_id.as_u64(), role_id.as_u64()],
             )?;
             Ok(())
@@ -434,20 +439,67 @@ pub mod data_access {
 
         //ANCHOR channel functions
 
+        fn ensure_channel_present(&mut self, channel_id: ChannelId) -> Result<(), Error> {
+            self.db.execute(
+                "INSERT OR IGNORE INTO channel_settings (channel_id) VALUES (?1)",
+                [channel_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_channel_mentioning(
+            &mut self,
+            channel_id: ChannelId,
+            value: PERMISSION,
+        ) -> Result<(), Error> {
+            self.ensure_channel_present(channel_id)?;
+            self.db.execute(
+                "UPDATE channel_settings SET override_mentioning",
+                params![value as u64],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_channel_proposing(
+            &mut self,
+            channel_id: ChannelId,
+            value: PERMISSION,
+        ) -> Result<(), Error> {
+            self.ensure_channel_present(channel_id)?;
+            self.db.execute(
+                "UPDATE channel_settings SET propose_permission",
+                params![value as u64],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_channel_public_visible(
+            &mut self,
+            channel_id: ChannelId,
+            value: bool,
+        ) -> Result<(), Error> {
+            self.ensure_channel_present(channel_id)?;
+            self.db.execute(
+                "UPDATE channel_settings SET public_commands",
+                params![value],
+            )?;
+            Ok(())
+        }
+
         pub fn get_channel_permissions(
             &self,
             _guild_id: GuildId,
             channel_id: ChannelId,
-        ) -> (u64, u64, i64) {
+        ) -> (bool, PERMISSION, PERMISSION) {
             self.db
                 .query_row(
-                    "SELECT public_commands, override_mentioning, disable_propose FROM channel_settings WHERE channel_id=?1",
+                    "SELECT public_commands, override_mentioning, propose_permission FROM channel_settings WHERE channel_id=?1",
                     params![channel_id.as_u64()],
                     |row| {
                         Ok((
-                            row.get::<usize, u64>(0)?,
-                            row.get::<usize, u64>(1)?,
-                            row.get::<usize, i64>(2)?,
+                            row.get::<usize, bool>(0)?,
+                            PERMISSION::fromint(row.get::<usize, u64>(1)?),
+                            PERMISSION::fromint(row.get::<usize, u64>(2)?),
                         ))
                     },
                 )

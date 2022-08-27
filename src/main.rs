@@ -22,14 +22,13 @@ use serenity::{
             },
         },
         gateway::Ready,
-        guild::Role,
         id::{ChannelId, GuildId, RoleId, UserId},
     },
     prelude::*,
 };
 
 mod structures;
-use structures::structures::ListId;
+use structures::structures::{ListId, PERMISSION};
 
 mod guild_commands;
 use crate::guild_commands::guild_commands::add_all_application_commands;
@@ -106,11 +105,15 @@ impl Handler {
         } = data.get_mut::<DB>().unwrap();
         let timestamp = serenity::model::Timestamp::now().unix_timestamp() as u64;
         if let Ok(mut x) = db.clone().lock() {
-            let mut override_canping = if member_admin { 2 } else { 0 };
+            let mut override_canping = if member_admin {
+                PERMISSION::ALLOW
+            } else {
+                PERMISSION::NEUTRAL
+            };
             let mut override_cooldown = -1;
             for role_id in role_ids {
                 let (_, role_canping, role_cooldown) = x.get_role_permissions(guild_id, *role_id);
-                override_canping = max(override_canping, role_canping);
+                override_canping = override_canping.combine(role_canping);
                 if override_cooldown * role_cooldown > 0 {
                     override_cooldown = min(override_cooldown, role_cooldown);
                 } else {
@@ -120,13 +123,15 @@ impl Handler {
 
             let (general_cooldown, general_canping, pingcooldown) = x.get_guild_ping_data(guild_id);
             let (_, channel_ping_rule, _) = x.get_channel_permissions(guild_id, channel_id);
-            let channel_restrict_ping = channel_ping_rule == 1;
-            if override_canping == 1 {
+            let channel_restrict_ping = channel_ping_rule == PERMISSION::DENY;
+            if override_canping == PERMISSION::DENY {
                 invalid_lists.push(("all".to_string(), ListInvalidReasons::RoleRestrictPing));
-            } else if !general_canping && override_canping == 0 {
-                invalid_lists.push(("all".to_string(), ListInvalidReasons::GuildRestrictPing));
-            } else if channel_restrict_ping && override_canping == 0 {
-                invalid_lists.push(("".to_string(), ListInvalidReasons::ChannelRestrictPing));
+            } else if override_canping == PERMISSION::NEUTRAL {
+                if !general_canping {
+                    invalid_lists.push(("all".to_string(), ListInvalidReasons::GuildRestrictPing));
+                } else if channel_restrict_ping {
+                    invalid_lists.push(("".to_string(), ListInvalidReasons::ChannelRestrictPing));
+                }
             }
 
             let last_global = global.entry(guild_id).or_insert(0);
@@ -277,24 +282,27 @@ impl Handler {
         member_id: UserId,
         as_admin: bool,
         ctx: &Context,
-    ) -> Result<bool, &str> {
+    ) -> bool {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
         if let Ok(mut x) = db.clone().lock() {
-            // Check membership...
             let get_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Ok(list_id) = get_list_id {
                 if !x.has_member(member_id, list_id) {
-                    return Ok(false);
+                    return false;
+                }
+                let (_, restricted_join, _) = x.get_list_permissions(list_id);
+                if restricted_join || as_admin {
+                    return false;
                 }
                 x.remove_member(member_id, list_id)
                     .expect("Failed to remove membership.");
-                return Ok(true);
+                return true;
             }
-            return Ok(false);
+            return false;
         }
-        return Err("Failed to obtain database mutex.");
+        return false;
     }
 
     async fn handle_join(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -307,29 +315,6 @@ impl Handler {
             .id;
         let member_admin = Handler::can_manage_messages(command);
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
-        let mut command_result: Option<CommandInvalidReasons> = None;
-
-        let data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get::<DB>().unwrap();
-
-        if let Ok(x) = db.clone().lock() {
-            let (channel_join, _, _) = x.get_channel_permissions(guild_id, command.channel_id);
-            let channel_restrict_join = channel_join == 1;
-            if channel_restrict_join && !member_admin {
-                command_result = Some(CommandInvalidReasons::ChannelRestriction);
-            }
-        }
-
-        if let Some(invalid_reason) = command_result {
-            let content = match invalid_reason {
-                CommandInvalidReasons::ChannelRestriction => {
-                    format!("This command cannot be used in this channel.")
-                }
-                _ => format!("Internal error"),
-            };
-            Handler::send_text(content, command, ctx).await;
-            return;
-        }
 
         let mut content = format!(
             "Attempting to add user with id {} to {} lists:",
@@ -375,7 +360,6 @@ impl Handler {
             if self
                 .remove_member(guild_id, list_name_str, member_id, as_admin, ctx)
                 .await
-                .expect("Failed to remove member")
             {
                 content += format!("\nRemoved from list {}", list_name_str).as_str();
             }
@@ -686,11 +670,14 @@ impl Handler {
                 CommandDataOption {
                     ref name, options, ..
                 } if name == "role" => {
-                    let role_index = options
+                    let role_value = options
                         .iter()
-                        .position(|x| x.name.as_str() == "role")
-                        .expect("No role argument given");
-                    let role_value = options[role_index].resolved.as_ref().unwrap();
+                        .filter(|x| x.name.as_str() == "role")
+                        .next()
+                        .expect("No role argument given")
+                        .resolved
+                        .as_ref()
+                        .unwrap();
                     let role: RoleId = if let CommandDataOptionValue::Role(ref i) = *role_value {
                         i.id
                     } else {
@@ -729,11 +716,14 @@ impl Handler {
                 CommandDataOption {
                     ref name, options, ..
                 } if name == "list" => {
-                    let list_index = options
+                    let list_value = options
                         .iter()
-                        .position(|x| x.name.as_str() == "list")
-                        .expect("No list argument given");
-                    let list_value = options[list_index].resolved.as_ref().unwrap();
+                        .filter(|x| x.name.as_str() == "list")
+                        .next()
+                        .expect("No list argument given")
+                        .resolved
+                        .as_ref()
+                        .unwrap();
                     let list: ListId = if let CommandDataOptionValue::Integer(ref i) = *list_value {
                         *i as u64
                     } else {
@@ -789,11 +779,14 @@ impl Handler {
                 CommandDataOption {
                     ref name, options, ..
                 } if name == "channel" => {
-                    let channel_index = options
+                    let channel_value = options
                         .iter()
-                        .position(|x| x.name.as_str() == "channel")
-                        .expect("No channel argument given");
-                    let channel_value = options[channel_index].resolved.as_ref().unwrap();
+                        .filter(|x| x.name.as_str() == "channel")
+                        .next()
+                        .expect("No channel argument given")
+                        .resolved
+                        .as_ref()
+                        .unwrap();
                     let channel: ChannelId =
                         if let CommandDataOptionValue::Channel(ref i) = *channel_value {
                             i.id
@@ -802,8 +795,18 @@ impl Handler {
                         };
                     for setting in options {
                         match setting.name.as_str() {
-                            "mentioning" => (),
-                            "proposing" => (),
+                            "mentioning" => {
+                                let tme = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *tme {}
+                                x.set_channel_mentioning(channel, PERMISSION::NEUTRAL)
+                                    .unwrap()
+                            }
+                            "proposing" => x
+                                .set_channel_proposing(channel, PERMISSION::NEUTRAL)
+                                .unwrap(),
+                            "visible_commands" => {
+                                x.set_channel_public_visible(channel, true).unwrap()
+                            }
                             _ => (),
                         }
                     }

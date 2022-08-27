@@ -482,6 +482,13 @@ pub mod guild_commands {
                                     .kind(CommandOptionType::Boolean)
                                     .required(false)
                             })
+                            .create_sub_option(|option| {
+                                option
+                                    .name("visible_commands")
+                                    .description("Whether or not commands like /list are visible in this channel.")
+                                    .kind(CommandOptionType::Boolean)
+                                    .required(false)
+                            })
                         })
                         .create_option(|catagory| {
                             catagory.name("proposals").description("Configure list proposals.")
