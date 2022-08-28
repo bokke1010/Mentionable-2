@@ -3,11 +3,11 @@ High priority, required for initial release:
         also includes private responses if, for example, the cooldown doesn't allow a ping yet (Ephemeral)
         this might make #bot-channel largely irrelevant due to 1-on-1 interactions
         May want to turn this off in some channels
-    buttons for next / previous list page
+  - buttons for next / previous list page
   - thread support
 
 Medium priority, you can expect these in the initial release:
-    buttons for proposed list instead of reactions
+  - buttons for proposed list instead of reactions
     Add message links to +listProposals
   - list search / filter
     member join / leave responses

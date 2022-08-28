@@ -362,6 +362,9 @@ impl Handler {
                 .await
             {
                 content += format!("\nRemoved from list {}", list_name_str).as_str();
+            } else {
+                content +=
+                    format!("\nFailed to remove member from list {}", list_name_str).as_str();
             }
         }
         command
@@ -387,6 +390,17 @@ impl Handler {
             .as_str()
             .expect("list name is not a valid str.");
 
+        let as_admin = Handler::can_manage_messages(command);
+        if !as_admin {
+            Handler::send_text(
+                String::from("You do not have permission to use this command."),
+                command,
+                ctx,
+            )
+            .await;
+            return;
+        }
+
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
@@ -398,6 +412,7 @@ impl Handler {
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     x.add_list(guild_id, &list_name.to_string(), "".to_string())
                         .expect("list creation failed");
+                    content += "Created list.";
                     ()
                 }
                 a => {
@@ -432,6 +447,16 @@ impl Handler {
             .as_str()
             .expect("list alias is not a valid str.");
 
+        let as_admin = Handler::can_manage_messages(command);
+        if !as_admin {
+            Handler::send_text(
+                String::from("You do not have permission to use this command."),
+                command,
+                ctx,
+            )
+            .await;
+            return;
+        }
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
@@ -472,7 +497,14 @@ impl Handler {
             }
         }
 
-        Handler::send_text(content, command, ctx).await;
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(content).ephemeral(true))
+            })
+            .await
+            .unwrap();
     }
 
     async fn compose_list(
@@ -993,55 +1025,99 @@ impl Handler {
 
     async fn handle_propose(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.unwrap();
+        let channel_id = command.channel_id;
         let name = command.data.options[0].value.as_ref().unwrap().to_string();
-        let proposal_id: u64;
+        let mut proposal_id: u64 = 0;
+        let as_admin = Handler::can_manage_messages(command);
+        let member = command.member.as_ref().unwrap();
+        let role_ids: &Vec<RoleId> = &member.roles;
 
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
+        let mut override_canpropose: PERMISSION;
+
         if let Ok(mut x) = db.clone().lock() {
-            let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-            proposal_id = x
-                .start_proposal(guild_id, &name, "".to_string(), timestamp)
-                .unwrap();
+            let (general_propose, ..) = x.get_propose_settings(guild_id).unwrap();
+
+            override_canpropose = match (as_admin, general_propose) {
+                (true, _) => PERMISSION::ALLOW,
+                (false, true) => PERMISSION::NEUTRAL,
+                (false, false) => PERMISSION::DENY,
+            };
+            let (_, _, propose_base) = x.get_channel_permissions(guild_id, channel_id);
+            override_canpropose = override_canpropose.combine(propose_base);
+
+            for role_id in role_ids {
+                let (role_can_propose, ..) = x.get_role_permissions(guild_id, *role_id);
+                override_canpropose = override_canpropose.combine(role_can_propose);
+            }
+
+            if override_canpropose != PERMISSION::DENY {
+                let timestamp = serenity::model::Timestamp::now().unix_timestamp();
+                proposal_id = x
+                    .start_proposal(guild_id, &name, "".to_string(), timestamp)
+                    .unwrap();
+            }
         } else {
             return;
         }
 
         let mut embed = CreateEmbed::default();
-        embed
-            .title(format!("A new list has been proposed: {}", name))
-            .author(|author| {
-                author
-                    .icon_url(command.user.avatar_url().unwrap())
-                    .name(command.user.name.clone())
-            })
-            .color((31, 127, 255));
+        if override_canpropose != PERMISSION::DENY {
+            embed
+                .title(format!("A new list has been proposed: {}", name))
+                .author(|author| {
+                    author
+                        .icon_url(command.user.avatar_url().unwrap())
+                        .name(command.user.name.clone())
+                })
+                .color((31, 127, 255));
 
-        let mut button = CreateButton::default();
-        button
-            .custom_id(proposal_id.to_string())
-            .label("Vote")
-            .style(ButtonStyle::Secondary);
-        let mut action_row = CreateActionRow::default();
-        action_row.add_button(button);
-
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.add_embed(embed);
-                        message.components(|c| c.add_action_row(action_row));
-                        message
-                    })
-            })
-            .await
-            .unwrap();
+            let mut button = CreateButton::default();
+            button
+                .custom_id(proposal_id.to_string())
+                .label("Vote")
+                .style(ButtonStyle::Secondary);
+            let mut action_row = CreateActionRow::default();
+            action_row.add_button(button);
+            command
+                .create_interaction_response(&ctx.http, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| {
+                            message.add_embed(embed);
+                            message.components(|c| c.add_action_row(action_row));
+                            message
+                        })
+                })
+                .await
+                .unwrap();
+        } else {
+            embed
+                .title("You do not have permission to use /propose here.")
+                .color((255, 0, 0));
+            command
+                .create_interaction_response(&ctx.http, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| {
+                            message.add_embed(embed).ephemeral(true)
+                        })
+                })
+                .await
+                .unwrap();
+        }
     }
 
     async fn handle_cancel_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
+            Handler::send_text(
+                String::from("You do not have permission to use this command."),
+                command,
+                ctx,
+            )
+            .await;
             return;
         }
         let guild_id = command.guild_id.unwrap();
@@ -1055,7 +1131,7 @@ impl Handler {
             x.remove_proposal(list_id).unwrap();
         }
 
-        Handler::send_text("canceled proposal".to_string(), command, ctx).await;
+        Handler::send_text("Canceled proposal".to_string(), command, ctx).await;
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) {
