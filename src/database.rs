@@ -215,6 +215,14 @@ pub mod data_access {
             Ok(())
         }
 
+        pub fn remove_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
+            self.db.execute(
+                "DELETE FROM alias WHERE list_id = ?1 AND name = ?2",
+                params![list_id, name],
+            )?;
+            Ok(())
+        }
+
         //Getters
 
         pub fn get_list_permissions(&self, list_id: ListId) -> (u64, bool, bool) {

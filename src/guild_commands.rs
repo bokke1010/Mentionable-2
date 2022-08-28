@@ -2,7 +2,7 @@ pub mod guild_commands {
 
     use serenity::{
         model::{
-            application::command::{Command, CommandOptionChoice, CommandOptionType},
+            application::command::{Command, CommandOptionType},
             id::GuildId,
             permissions,
         },
@@ -189,6 +189,7 @@ pub mod guild_commands {
                                 .description("A name a list is already known under")
                                 .kind(CommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         }).create_option(|option| {
                             option
                                 .name("alias")
@@ -326,22 +327,16 @@ pub mod guild_commands {
                 })
                 .create_application_command(|command| { // mod only
                     command
-                        .name("rename")
-                        .description("Rename a list")
+                        .name("remove_alias")
+                        .description("Removes a list alias")
                         .default_member_permissions(can_manage_messages)
                         .create_option(|option| {
                             option
-                                .name("current")
-                                .description("The current name")
+                                .name("name")
+                                .description("The alias to be removed")
                                 .kind(CommandOptionType::String)
                                 .required(true)
-                        })
-                        .create_option(|option| {
-                            option
-                                .name("new")
-                                .description("The new name for this list")
-                                .kind(CommandOptionType::String)
-                                .required(true)
+                                .set_autocomplete(true)
                         })
                 })
                 .create_application_command(|command| { // mod only

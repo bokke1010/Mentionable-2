@@ -56,12 +56,14 @@ enum ListInvalidReasons {
     RoleRestrictPing,
 }
 
+/*
 enum CommandInvalidReasons {
     ChannelRestriction,
     GuildRestriction,
     RoleRestriction,
     DoesNotExist,
 }
+*/
 
 struct Handler;
 
@@ -477,6 +479,89 @@ impl Handler {
         Handler::send_text(content, command, ctx).await;
     }
 
+    async fn handle_remove_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        let list_name: &str = &command
+            .data
+            .options
+            .get(0)
+            .expect("No list name given")
+            .value
+            .as_ref()
+            .expect("List name argument has no value")
+            .as_str()
+            .expect("list name is not a valid str.");
+
+        let as_admin = Handler::can_manage_messages(command);
+        if !as_admin {
+            Handler::send_text(
+                String::from("You do not have permission to use this command."),
+                command,
+                ctx,
+            )
+            .await;
+            return;
+        }
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        let mut content = String::new();
+        if let Ok(mut x) = db.clone().lock() {
+            let res_id = x.get_list_id_by_name(list_name, guild_id);
+
+            if let Ok(id) = res_id {
+                if x.get_list_names(id, guild_id).unwrap().len() > 1 {
+                    x.remove_alias(id, list_name).unwrap();
+                    content = format!("Removed alias {}.", list_name);
+                } else {
+                    content = format!("You cannot remove the last alias of a list.")
+                }
+            } else if Err(rusqlite::Error::QueryReturnedNoRows) == res_id {
+                content = format!("There is no list named {} to alias to.", list_name);
+            } else {
+                res_id.unwrap();
+            }
+        }
+
+        Handler::send_text(content, command, ctx).await;
+    }
+
+    async fn autocomplete_alias(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
+        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
+        let member_admin = member
+            .permissions
+            .unwrap()
+            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+
+        let mut filter = "";
+        for field in &autocomplete.data.options {
+            if field.focused && field.name == "name" {
+                filter = field.value.as_ref().unwrap().as_str().unwrap();
+            }
+        }
+        let mut aliases: Vec<String> = Vec::new();
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
+            aliases = x
+                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
+                .unwrap();
+        }
+        autocomplete
+            .create_autocomplete_response(&ctx.http, |response| {
+                for list in aliases {
+                    response.add_string_choice(&list, &list);
+                }
+                response
+            })
+            .await
+            .unwrap();
+    }
+
     async fn handle_get(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.unwrap();
         let member_id: UserId = command
@@ -505,6 +590,118 @@ impl Handler {
             })
             .await
             .unwrap();
+    }
+
+    async fn handle_add(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        if !Handler::can_manage_messages(command) {
+            Handler::send_text(
+                String::from("You do not have permission to use this command"),
+                command,
+                ctx,
+            )
+            .await;
+            return;
+        }
+
+        let target_value = command
+            .data
+            .options
+            .iter()
+            .filter(|x| x.name == "user")
+            .next()
+            .unwrap()
+            .resolved
+            .as_ref()
+            .unwrap();
+        let member_id = match target_value {
+            CommandDataOptionValue::User(ref target, _) => target.id,
+            _ => panic!("Invalid argument type"),
+        };
+        let list_names: Vec<CommandDataOption> = command.data.options.clone();
+
+        let mut content = format!(
+            "Attempting to add user with id {} to {} lists:",
+            member_id,
+            list_names.len() - 1
+        );
+
+        for list_name in list_names {
+            if list_name.name == "user" {
+                continue;
+            };
+            let list_name_val = list_name.value.unwrap();
+            let list_name_str = list_name_val.as_str().unwrap();
+            if self
+                .add_member(guild_id, list_name_str, member_id, true, ctx)
+                .await
+            {
+                content += format!("\nAdded to list {}", list_name_str).as_str();
+            } else {
+                content += format!("\nFailed to add user to list {}", list_name_str).as_str();
+            }
+        }
+        Handler::send_text(content, command, ctx).await;
+    }
+
+    async fn handle_kick(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        if !Handler::can_manage_messages(command) {
+            Handler::send_text(
+                String::from("You do not have permission to use this command"),
+                command,
+                ctx,
+            )
+            .await;
+            return;
+        }
+
+        let target_value = command
+            .data
+            .options
+            .iter()
+            .filter(|x| x.name == "user")
+            .next()
+            .unwrap()
+            .resolved
+            .as_ref()
+            .unwrap();
+        let member_id = match target_value {
+            CommandDataOptionValue::User(ref target, _) => target.id,
+            _ => panic!("Invalid argument type"),
+        };
+        let list_names: Vec<CommandDataOption> = command.data.options.clone();
+
+        let mut content = format!(
+            "Attempting to remove user with id {} from {} lists:",
+            member_id,
+            list_names.len() - 1
+        );
+        for list_name in list_names {
+            if list_name.name == "user" {
+                continue;
+            };
+            let list_name_val = list_name.value.unwrap();
+            let list_name_str = list_name_val.as_str().unwrap();
+
+            if self
+                .remove_member(guild_id, list_name_str, member_id, true, ctx)
+                .await
+            {
+                content += format!("\nRemoved from list {}", list_name_str).as_str();
+            } else {
+                content +=
+                    format!("\nFailed to remove member from list {}", list_name_str).as_str();
+            }
+        }
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(content))
+            })
+            .await
+            .expect("Failed to send leave response.");
     }
 
     async fn compose_list(
@@ -1208,10 +1405,10 @@ impl EventHandler for Handler {
                 "alias" => self.handle_alias(&command, &ctx).await,
                 "propose" => self.handle_propose(&command, &ctx).await,
                 // "list_proposals" => "Nope".to_string(),
-                // // admin commandsw
-                // "add" => "Nope".to_string(),
-                // "kick" => "Nope".to_string(),
-                // "rename" => "Nope".to_string(),
+                // admin commands
+                "add" => self.handle_add(&command, &ctx).await,
+                "kick" => self.handle_kick(&command, &ctx).await,
+                "remove_alias" => self.handle_remove_alias(&command, &ctx).await,
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 _ => self.handle_invalid(&command).await,
@@ -1221,6 +1418,8 @@ impl EventHandler for Handler {
                 "ping" => self.autocomplete_ping(&completable, &ctx).await,
                 "cancel_proposal" => self.autocomplete_proposal(&completable, &ctx).await,
                 "configure" => self.autocomplete_configure(&completable, &ctx).await,
+                "alias" => self.autocomplete_alias(&completable, &ctx).await,
+                "remove_alias" => self.autocomplete_alias(&completable, &ctx).await,
                 _ => (),
             }
         } else if let Interaction::MessageComponent(component) = interaction {
