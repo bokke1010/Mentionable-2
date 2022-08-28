@@ -78,7 +78,6 @@ pub mod data_access {
                 destination_channel INTEGER );\n\
             CREATE TABLE IF NOT EXISTS proposals ( \
                 list_id             INTEGER PRIMARY KEY REFERENCES lists(id), \
-                votes               INTEGER DEFAULT 0, \
                 timestamp           INTEGER NOT NULL );";
             self.db.execute_batch(statement)
         }
@@ -408,10 +407,11 @@ pub mod data_access {
         //ANCHOR role functions
 
         pub fn get_role_permissions(
-            &self,
+            &mut self,
             guild_id: GuildId,
             role_id: RoleId,
         ) -> (PERMISSION, PERMISSION, i64) {
+            self.ensure_role_present(guild_id, role_id).unwrap();
             self.db
                 .query_row(
                     "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
@@ -527,10 +527,11 @@ pub mod data_access {
         }
 
         pub fn get_channel_permissions(
-            &self,
+            &mut self,
             _guild_id: GuildId,
             channel_id: ChannelId,
         ) -> (bool, PERMISSION, PERMISSION) {
+            self.ensure_channel_present(channel_id).unwrap();
             self.db
                 .query_row(
                     "SELECT public_commands, override_mentioning, propose_permission FROM channel_settings WHERE channel_id=?1",
@@ -669,6 +670,30 @@ pub mod data_access {
             let mut lists = Vec::new();
             while let Some(row) = rows.next()? {
                 lists.push(row.get::<usize, String>(0)?);
+            }
+            Ok(lists)
+        }
+
+        pub fn get_proposals(
+            &mut self,
+            guild_id: GuildId,
+        ) -> Result<Vec<(String, u64, u64)>, Error> {
+            let lists_query = "SELECT alias.name, proposals.timestamp, lists.id \
+                FROM lists, alias, proposals \
+                WHERE lists.guild_id = :guid \
+                AND alias.list_id = lists.id \
+                AND lists.id = proposals.list_id \
+                ORDER BY alias.name ASC";
+            let mut stmt = self.db.prepare(lists_query)?;
+            let mut rows = stmt.query(named_params! { ":guid": guild_id.as_u64() })?;
+
+            let mut lists = Vec::new();
+            while let Some(row) = rows.next()? {
+                lists.push((
+                    row.get::<usize, String>(0)?,
+                    row.get::<usize, u64>(1)?,
+                    row.get::<usize, u64>(2)?,
+                ));
             }
             Ok(lists)
         }

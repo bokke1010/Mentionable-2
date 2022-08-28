@@ -266,7 +266,7 @@ impl Handler {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Ok(list_id) = res_list_id {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
-                if restricted_join || as_admin {
+                if restricted_join && !as_admin {
                     return false;
                 }
                 x.add_member(member_id, list_id)
@@ -295,7 +295,7 @@ impl Handler {
                     return false;
                 }
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
-                if restricted_join || as_admin {
+                if restricted_join && !as_admin {
                     return false;
                 }
                 x.remove_member(member_id, list_id)
@@ -968,6 +968,11 @@ impl Handler {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
                                     x.set_role_propose(guild_id, role, *b).unwrap();
+                                    embed.field(
+                                        "disable propose",
+                                        format!("Proposes disabled: {}", b),
+                                        false,
+                                    );
                                 } else {
                                     panic!("The parameter disable_propose for configure role is incorrectly configured");
                                 }
@@ -976,6 +981,7 @@ impl Handler {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
                                     x.set_role_canping(guild_id, role, *b).unwrap();
+                                    embed.field("disable ping", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter disable_ping for configure role is incorrectly configured");
                                 }
@@ -984,6 +990,7 @@ impl Handler {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
                                     x.set_role_cooldown(guild_id, role, *b).unwrap();
+                                    embed.field("role cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
                                 }
@@ -1019,6 +1026,11 @@ impl Handler {
                                     *resolved_value
                                 {
                                     x.set_description(list, description).unwrap();
+                                    embed.field(
+                                        "set description",
+                                        format!("{}", description),
+                                        false,
+                                    );
                                 } else {
                                     panic!("The parameter description for configure list is incorrectly configured");
                                 }
@@ -1029,6 +1041,7 @@ impl Handler {
                                     *resolved_value
                                 {
                                     x.set_cooldown(list, *cooldown as u64).unwrap();
+                                    embed.field("set cooldown", format!("{}", cooldown), false);
                                 } else {
                                     panic!("The parameter cooldown for configure list is incorrectly configured");
                                 }
@@ -1039,6 +1052,7 @@ impl Handler {
                                     *resolved_value
                                 {
                                     x.set_joinable(list, *joinable).unwrap();
+                                    embed.field("set joinable", format!("{}", joinable), false);
                                 } else {
                                     panic!("The parameter allow_join for configure list is incorrectly configured");
                                 }
@@ -1049,6 +1063,7 @@ impl Handler {
                                     *resolved_value
                                 {
                                     x.set_pingable(list, *pingable).unwrap();
+                                    embed.field("allow ping", format!("{}", pingable), false);
                                 } else {
                                     panic!("The parameter allow_ping for configure list is incorrectly configured");
                                 }
@@ -1057,6 +1072,7 @@ impl Handler {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
                                     x.set_visible(list, *b).unwrap();
+                                    embed.field("set visible", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter show for configure list is incorrectly configured");
                                 }
@@ -1089,18 +1105,25 @@ impl Handler {
                                 if let CommandDataOptionValue::String(ref mention_perm) =
                                     *resolved_value
                                 {
-                                    x.set_channel_mentioning(
-                                        channel,
-                                        match mention_perm.as_str() {
-                                            "0" => PERMISSION::NEUTRAL,
-                                            "1" => PERMISSION::DENY,
-                                            "2" => PERMISSION::ALLOW,
-                                            _ => panic!(
-                                                "Invalid option in channel mentioning config"
-                                            ),
-                                        },
-                                    )
-                                    .unwrap()
+                                    let perm = match mention_perm.as_str() {
+                                        "0" => PERMISSION::NEUTRAL,
+                                        "1" => PERMISSION::DENY,
+                                        "2" => PERMISSION::ALLOW,
+                                        _ => panic!("Invalid option in channel mentioning config"),
+                                    };
+                                    embed.field(
+                                        "set mentioning",
+                                        format!(
+                                            "{}",
+                                            match perm {
+                                                PERMISSION::NEUTRAL => "neutral",
+                                                PERMISSION::DENY => "deny",
+                                                PERMISSION::ALLOW => "allow",
+                                            }
+                                        ),
+                                        false,
+                                    );
+                                    x.set_channel_mentioning(channel, perm).unwrap();
                                 }
                             }
                             "proposing" => {
@@ -1108,18 +1131,25 @@ impl Handler {
                                 if let CommandDataOptionValue::String(ref propose_perm) =
                                     *resolved_value
                                 {
-                                    x.set_channel_proposing(
-                                        channel,
-                                        match propose_perm.as_str() {
-                                            "0" => PERMISSION::NEUTRAL,
-                                            "1" => PERMISSION::DENY,
-                                            "2" => PERMISSION::ALLOW,
-                                            _ => panic!(
-                                                "Invalid option in channel mentioning config"
-                                            ),
-                                        },
-                                    )
-                                    .unwrap()
+                                    let perm = match propose_perm.as_str() {
+                                        "0" => PERMISSION::NEUTRAL,
+                                        "1" => PERMISSION::DENY,
+                                        "2" => PERMISSION::ALLOW,
+                                        _ => panic!("Invalid option in channel proposing config"),
+                                    };
+                                    embed.field(
+                                        "set proposing",
+                                        format!(
+                                            "{}",
+                                            match perm {
+                                                PERMISSION::NEUTRAL => "neutral",
+                                                PERMISSION::DENY => "deny",
+                                                PERMISSION::ALLOW => "allow",
+                                            }
+                                        ),
+                                        false,
+                                    );
+                                    x.set_channel_proposing(channel, perm).unwrap()
                                 }
                             }
                             "visible_commands" => {
@@ -1128,7 +1158,12 @@ impl Handler {
                                     *resolved_value
                                 {
                                     x.set_channel_public_visible(channel, *visible_commands)
-                                        .unwrap()
+                                        .unwrap();
+                                    embed.field(
+                                        "set public commands visible",
+                                        format!("{}", visible_commands),
+                                        false,
+                                    );
                                 }
                             }
                             _ => (),
@@ -1145,21 +1180,28 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref prop_enabled) =
                                     *resolved_value
                                 {
-                                    x.set_propose_enabled(guild_id, *prop_enabled).unwrap()
+                                    x.set_propose_enabled(guild_id, *prop_enabled).unwrap();
+                                    embed.field(
+                                        "enable proposals",
+                                        format!("{}", prop_enabled),
+                                        false,
+                                    );
                                 }
                             }
                             "timeout" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Integer(ref value) = *resolved_value
                                 {
-                                    x.set_propose_timeout(guild_id, *value as u64).unwrap()
+                                    x.set_propose_timeout(guild_id, *value as u64).unwrap();
+                                    embed.field("proposal timeout", format!("{}", value), false);
                                 }
                             }
                             "threshold" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Integer(ref value) = *resolved_value
                                 {
-                                    x.set_propose_threshold(guild_id, *value as u64).unwrap()
+                                    x.set_propose_threshold(guild_id, *value as u64).unwrap();
+                                    embed.field("proposal threshold", format!("{}", value), false);
                                 }
                             }
                             _ => (),
@@ -1332,14 +1374,14 @@ impl Handler {
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) {
+        //TODO: this should probably actually do something I suppose?
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
-
         if let Ok(mut x) = db.clone().lock() {
             let votes = x.get_proposal_votes(list_id);
             let guild_id = x.get_list_guild(list_id).unwrap();
             let vote_threshold = x.get_vote_threshold(guild_id).unwrap();
-            if votes > vote_threshold {
+            if votes >= vote_threshold {
                 println!("vote succesful");
             }
         }
@@ -1374,20 +1416,59 @@ impl Handler {
             .unwrap();
     }
 
+    async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id = command.guild_id.unwrap();
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        let mut embed = CreateEmbed::default();
+        let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
+
+        if let Ok(mut x) = db.clone().lock() {
+            let (_, timeout, threshold) = x.get_propose_settings(guild_id).unwrap();
+            let proposals = x.get_proposals(guild_id).unwrap();
+            for (name, timestamp, list_id) in proposals {
+                let votes = x.get_proposal_votes(list_id);
+                let seconds = timeout - (now - timestamp);
+                let (minutes, seconds) = (seconds / 60, seconds % 60);
+                let (hours, minutes) = (minutes / 60, minutes % 60);
+                let (days, hours) = (hours / 24, hours % 24);
+                embed.field(
+                    name,
+                    format!(
+                        "Has {} / {} votes, {} days, {} hours, {} minutes and {} seconds remaining.",
+                        votes, threshold, days, hours, minutes, seconds,
+                    ),
+                    true,
+                );
+            }
+        }
+
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.add_embed(embed).ephemeral(true))
+            })
+            .await
+            .unwrap();
+    }
+
     async fn propose_vote_from_component(
         &self,
         component: &MessageComponentInteraction,
         ctx: &Context,
     ) {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
-
-        let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
-
-        if let Ok(mut x) = db.clone().lock() {
-            x.vote_proposal(list_id, component.user.id).unwrap();
+        {
+            let mut data = ctx.data.write().await;
+            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            if let Ok(mut x) = db.clone().lock() {
+                x.vote_proposal(list_id, component.user.id).unwrap();
+            }
         }
         self.check_proposal(list_id, ctx).await;
+        component.defer(&ctx).await.unwrap();
     }
 }
 
@@ -1404,7 +1485,7 @@ impl EventHandler for Handler {
                 "list" => self.handle_list(&command, &ctx).await,
                 "alias" => self.handle_alias(&command, &ctx).await,
                 "propose" => self.handle_propose(&command, &ctx).await,
-                // "list_proposals" => "Nope".to_string(),
+                "list_proposals" => self.handle_list_proposals(&command, &ctx).await,
                 // admin commands
                 "add" => self.handle_add(&command, &ctx).await,
                 "kick" => self.handle_kick(&command, &ctx).await,
