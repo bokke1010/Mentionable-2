@@ -119,6 +119,38 @@ pub mod data_access {
                 .unwrap()
         }
 
+        pub fn set_guild_canping(&mut self, guild_id: GuildId, value: bool) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET general_canping = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_guild_general_cooldown(
+            &mut self,
+            guild_id: GuildId,
+            value: u64,
+        ) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET general_cooldown = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_guild_ping_cooldown(
+            &mut self,
+            guild_id: GuildId,
+            value: u64,
+        ) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET pingcooldown = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
         //ANCHOR List functions
         pub fn add_list(
             &mut self,
@@ -138,7 +170,7 @@ pub mod data_access {
         //List config
         pub fn set_pingable(&mut self, list_id: ListId, pingable: bool) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET ping_permission = ?1 WHERE list_id=?2",
+                "UPDATE lists SET ping_permission = ?1 WHERE id = ?2",
                 params![pingable, list_id],
             )?;
             Ok(())
@@ -146,7 +178,7 @@ pub mod data_access {
 
         pub fn set_joinable(&mut self, list_id: ListId, joinable: bool) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET join_permission = ?1 WHERE list_id=?2",
+                "UPDATE lists SET join_permission = ?1 WHERE id = ?2",
                 params![joinable, list_id],
             )?;
             Ok(())
@@ -154,7 +186,7 @@ pub mod data_access {
 
         pub fn set_visible(&mut self, list_id: ListId, visible: bool) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET visible = ?1 WHERE list_id=?2",
+                "UPDATE lists SET visible = ?1 WHERE id = ?2",
                 params![visible, list_id],
             )?;
             Ok(())
@@ -162,14 +194,14 @@ pub mod data_access {
 
         pub fn set_description(&mut self, list_id: ListId, value: &String) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET description = ?1 WHERE list_id=?2",
+                "UPDATE lists SET description = ?1 WHERE id = ?2",
                 params![value, list_id],
             )?;
             Ok(())
         }
         pub fn set_cooldown(&mut self, list_id: ListId, value: u64) -> Result<(), Error> {
             self.db.execute(
-                "UPDATE lists SET cooldown = ?1 WHERE list_id=?2",
+                "UPDATE lists SET cooldown = ?1 WHERE id = ?2",
                 params![value, list_id],
             )?;
             Ok(())
@@ -293,12 +325,12 @@ pub mod data_access {
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
                 AND alias.list_id = lists.id \
-                AND (NOT lists.ping_permission OR :show_all)
+                AND (NOT lists.ping_permission = :permissiondeny OR :show_all)
                 ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
             let mut stmt = self.db.prepare(lists_query)?;
             let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all }
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64 }
             )?;
 
             let mut lists = Vec::new();
@@ -454,8 +486,8 @@ pub mod data_access {
         ) -> Result<(), Error> {
             self.ensure_channel_present(channel_id)?;
             self.db.execute(
-                "UPDATE channel_settings SET override_mentioning",
-                params![value as u64],
+                "UPDATE channel_settings SET override_mentioning = ?1 WHERE channel_id = ?2",
+                params![value as u64, channel_id.as_u64()],
             )?;
             Ok(())
         }
@@ -467,8 +499,8 @@ pub mod data_access {
         ) -> Result<(), Error> {
             self.ensure_channel_present(channel_id)?;
             self.db.execute(
-                "UPDATE channel_settings SET propose_permission",
-                params![value as u64],
+                "UPDATE channel_settings SET propose_permission = ?1 WHERE channel_id = ?2",
+                params![value as u64, channel_id.as_u64()],
             )?;
             Ok(())
         }
@@ -480,8 +512,8 @@ pub mod data_access {
         ) -> Result<(), Error> {
             self.ensure_channel_present(channel_id)?;
             self.db.execute(
-                "UPDATE channel_settings SET public_commands",
-                params![value],
+                "UPDATE channel_settings SET public_commands = ?1 WHERE channel_id = ?2",
+                params![value, channel_id.as_u64()],
             )?;
             Ok(())
         }
@@ -507,6 +539,53 @@ pub mod data_access {
         }
 
         //ANCHOR proposal functions
+
+        // Configuration
+
+        pub fn set_propose_enabled(&mut self, guild_id: GuildId, value: bool) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET general_propose = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_propose_timeout(&mut self, guild_id: GuildId, value: u64) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET propose_timeout = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_propose_threshold(
+            &mut self,
+            guild_id: GuildId,
+            value: u64,
+        ) -> Result<(), Error> {
+            self.db.execute(
+                "UPDATE guilds SET propose_threshold = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn get_propose_settings(&self, guild_id: GuildId) -> Result<(bool, u64, u64), Error> {
+            self.db
+                .query_row(
+                    "SELECT general_propose, propose_timeout, propose_threshold FROM guilds WHERE id = ?1",
+                    params![guild_id.as_u64()],
+                    |row| {
+                        Ok((
+                            row.get::<usize, bool>(0)?,
+                            row.get::<usize, u64>(1)?,
+                            row.get::<usize, u64>(2)?,
+                        ))
+                    },
+                )
+        }
+
+        // Usage functions
 
         pub fn start_proposal(
             &mut self,

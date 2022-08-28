@@ -646,23 +646,73 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             match subcom {
                 CommandDataOption { ref name, .. } if name == "show" => {
-                    //TODO: read all these options.
-                    embed.color((0,0,0)).description("test")
-                    .field("Guild-wide", "allow pings\nshared cooldown\nlist cooldown\nunaffected roles", false)
-                    .field("Role-specific", "list of role - bool pairs for roles that cannot ping", false)
-                    .field("List-specific", "description\ncooldown\nallowpings\nallowjoins\nvisible\naliases", false)
-                    .field("channel-specific", "type (membership, mentioning, proposals, information (depends on what's configured as visible)\npermission (neutral, deny, allow)", false)
-                    .field("proposal settings", "enable\ntimeout\nthreshold", false)
-                    .field("Role respondance", "TODO", false);
+                    let (a, b, c) = x.get_guild_ping_data(guild_id);
+                    let (d, e, f) = x.get_propose_settings(guild_id).unwrap();
+                    embed
+                        .color((0, 0, 0))
+                        .description("test")
+                        .field(
+                            "Guild-wide",
+                            format!(
+                                "allow pings {}\nshared cooldown {}\nlist cooldown {}",
+                                b, a, c
+                            ),
+                            false,
+                        )
+                        .field(
+                            "proposal settings",
+                            format!("enable {}\ntimeout {}\nthreshold {}", d, e, f),
+                            false,
+                        )
+                        .field("Role respondance", "TODO", false);
                 }
                 CommandDataOption {
                     ref name, options, ..
                 } if name == "guild" => {
+                    embed
+                        .color((255, 0, 0))
+                        .description("Configuring guild settings");
                     for setting in options {
                         match setting.name.as_str() {
-                            "allow_ping" => (),
-                            "set_guild_ping_cooldown" => (),
-                            "set_list_ping_cooldown" => (),
+                            "allow_ping" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_guild_canping(guild_id, *b).unwrap();
+                                    embed.field(
+                                        "Can ping",
+                                        format!("public can ping set to {}", b),
+                                        false,
+                                    );
+                                } else {
+                                    panic!("The parameter disable_propose for configure role is incorrectly configured");
+                                }
+                            }
+                            "set_guild_ping_cooldown" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref b) = *temp {
+                                    x.set_guild_general_cooldown(guild_id, *b as u64).unwrap();
+                                    embed.field(
+                                        "Guild ping cooldown",
+                                        format!("Guild-wide cooldown set to {}", b),
+                                        false,
+                                    );
+                                } else {
+                                    panic!("The parameter disable_propose for configure role is incorrectly configured");
+                                }
+                            }
+                            "set_list_ping_cooldown" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref b) = *temp {
+                                    x.set_guild_ping_cooldown(guild_id, *b as u64).unwrap();
+                                    embed.field(
+                                        "List ping cooldown",
+                                        format!("List ping cooldown set to {}", b),
+                                        false,
+                                    );
+                                } else {
+                                    panic!("The parameter disable_propose for configure role is incorrectly configured");
+                                }
+                            }
                             _ => (),
                         }
                     }
@@ -724,42 +774,52 @@ impl Handler {
                         .resolved
                         .as_ref()
                         .unwrap();
-                    let list: ListId = if let CommandDataOptionValue::Integer(ref i) = *list_value {
-                        *i as u64
+                    let list: &str = if let CommandDataOptionValue::String(ref list) = *list_value {
+                        list.as_str()
                     } else {
-                        panic!("List argument is not a valid integer")
+                        panic!("List argument is not valid")
                     };
-                    //TODO: list by name
+                    let list = x
+                        .get_list_id_by_name(list, guild_id)
+                        .expect("List not found");
                     for setting in options {
                         match setting.name.as_str() {
                             "description" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::String(ref b) = *temp {
-                                    x.set_description(list, b).unwrap();
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref description) =
+                                    *resolved_value
+                                {
+                                    x.set_description(list, description).unwrap();
                                 } else {
                                     panic!("The parameter description for configure list is incorrectly configured");
                                 }
                             }
                             "cooldown" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref b) = *temp {
-                                    x.set_cooldown(list, *b as u64).unwrap();
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref cooldown) =
+                                    *resolved_value
+                                {
+                                    x.set_cooldown(list, *cooldown as u64).unwrap();
                                 } else {
                                     panic!("The parameter cooldown for configure list is incorrectly configured");
                                 }
                             }
                             "allow_join" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_joinable(list, *b).unwrap();
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref joinable) =
+                                    *resolved_value
+                                {
+                                    x.set_joinable(list, *joinable).unwrap();
                                 } else {
                                     panic!("The parameter allow_join for configure list is incorrectly configured");
                                 }
                             }
                             "allow_ping" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_pingable(list, *b).unwrap();
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref pingable) =
+                                    *resolved_value
+                                {
+                                    x.set_pingable(list, *pingable).unwrap();
                                 } else {
                                     panic!("The parameter allow_ping for configure list is incorrectly configured");
                                 }
@@ -796,16 +856,51 @@ impl Handler {
                     for setting in options {
                         match setting.name.as_str() {
                             "mentioning" => {
-                                let tme = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *tme {}
-                                x.set_channel_mentioning(channel, PERMISSION::NEUTRAL)
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref mention_perm) =
+                                    *resolved_value
+                                {
+                                    x.set_channel_mentioning(
+                                        channel,
+                                        match mention_perm.as_str() {
+                                            "0" => PERMISSION::NEUTRAL,
+                                            "1" => PERMISSION::DENY,
+                                            "2" => PERMISSION::ALLOW,
+                                            _ => panic!(
+                                                "Invalid option in channel mentioning config"
+                                            ),
+                                        },
+                                    )
                                     .unwrap()
+                                }
                             }
-                            "proposing" => x
-                                .set_channel_proposing(channel, PERMISSION::NEUTRAL)
-                                .unwrap(),
+                            "proposing" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref propose_perm) =
+                                    *resolved_value
+                                {
+                                    x.set_channel_proposing(
+                                        channel,
+                                        match propose_perm.as_str() {
+                                            "0" => PERMISSION::NEUTRAL,
+                                            "1" => PERMISSION::DENY,
+                                            "2" => PERMISSION::ALLOW,
+                                            _ => panic!(
+                                                "Invalid option in channel mentioning config"
+                                            ),
+                                        },
+                                    )
+                                    .unwrap()
+                                }
+                            }
                             "visible_commands" => {
-                                x.set_channel_public_visible(channel, true).unwrap()
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref visible_commands) =
+                                    *resolved_value
+                                {
+                                    x.set_channel_public_visible(channel, *visible_commands)
+                                        .unwrap()
+                                }
                             }
                             _ => (),
                         }
@@ -816,9 +911,28 @@ impl Handler {
                 } if name == "proposals" => {
                     for setting in options {
                         match setting.name.as_str() {
-                            "enabled" => (),
-                            "timeout" => (),
-                            "threshold" => (),
+                            "enabled" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref prop_enabled) =
+                                    *resolved_value
+                                {
+                                    x.set_propose_enabled(guild_id, *prop_enabled).unwrap()
+                                }
+                            }
+                            "timeout" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref value) = *resolved_value
+                                {
+                                    x.set_propose_timeout(guild_id, *value as u64).unwrap()
+                                }
+                            }
+                            "threshold" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Integer(ref value) = *resolved_value
+                                {
+                                    x.set_propose_threshold(guild_id, *value as u64).unwrap()
+                                }
+                            }
                             _ => (),
                         }
                     }
@@ -831,6 +945,45 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| message.add_embed(embed))
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn autocomplete_configure(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
+        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
+        let member_admin = member
+            .permissions
+            .unwrap()
+            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+        let mut filter = "";
+        for field in &autocomplete.data.options {
+            if field.name == "list" {
+                for subfield in &field.options {
+                    if subfield.focused && subfield.name == "list" {
+                        filter = subfield.value.as_ref().unwrap().as_str().unwrap();
+                    }
+                }
+            }
+        }
+        let mut aliases: Vec<String> = Vec::new();
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
+            aliases = x
+                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
+                .unwrap();
+        }
+        autocomplete
+            .create_autocomplete_response(&ctx.http, |response| {
+                for list in aliases {
+                    response.add_string_choice(&list, &list);
+                }
+                response
             })
             .await
             .unwrap();
@@ -991,6 +1144,7 @@ impl EventHandler for Handler {
             match completable.data.name.as_str() {
                 "ping" => self.autocomplete_ping(&completable, &ctx).await,
                 "cancel_proposal" => self.autocomplete_proposal(&completable, &ctx).await,
+                "configure" => self.autocomplete_configure(&completable, &ctx).await,
                 _ => (),
             }
         } else if let Interaction::MessageComponent(component) = interaction {

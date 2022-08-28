@@ -2,7 +2,7 @@ pub mod guild_commands {
 
     use serenity::{
         model::{
-            application::command::{Command, CommandOptionType},
+            application::command::{Command, CommandOptionChoice, CommandOptionType},
             id::GuildId,
             permissions,
         },
@@ -421,6 +421,7 @@ pub mod guild_commands {
                                     .description("The list to configure.")
                                     .kind(CommandOptionType::String)
                                     .required(true)
+                                    .set_autocomplete(true)
                             })
                             .create_sub_option(|option| {
                                 option
@@ -472,15 +473,21 @@ pub mod guild_commands {
                                 option
                                     .name("mentioning")
                                     .description("Whether or not mentioning lists is allowed by the channel.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
                                     .name("proposing")
                                     .description("Whether or not proposing new lists is allowed by the channel.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
