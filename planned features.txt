@@ -1,27 +1,27 @@
 High priority, required for initial release:
-  - slash commands (please)
+  v slash commands (please)
         also includes private responses if, for example, the cooldown doesn't allow a ping yet (Ephemeral)
         this might make #bot-channel largely irrelevant due to 1-on-1 interactions
         May want to turn this off in some channels
-  - buttons for next / previous list page
-  - thread support
+  v buttons for next / previous list page
+  v thread support
 
 Medium priority, you can expect these in the initial release:
-  - buttons for proposed list instead of reactions
-    Add message links to +listProposals
-  - list search / filter
-    member join / leave responses
-  - list aliases
-    neater formatting, possibly more embeds
-    context menu for ping reply to
-    proposal form, including description?
-    Automatic logging for a channel / role.
+  v buttons for proposed list instead of reactions
+  x Add message links to +listProposals
+  v list search / filter
+  o member join / leave responses
+  v list aliases
+  ~ neater formatting, possibly more embeds
+  x context menu for ping reply to
+  x proposal form, including description?
+  o Automatic logging for a channel / role.
 
 Low priority, often either complicated or less useful:
-    list groups / collections?
-    ping message / description (that can be added when using /ping)
-    timed responses? possibly, quite a rabbit hole
+  x list groups / collections?
+  x ping message / description (that can be added when using /ping)
+  x timed responses? possibly, quite a rabbit hole
 
 TODO
-    permission system
-    cooldown checks
+  ~ permission system
+  v cooldown checks
