@@ -11,6 +11,7 @@ use serenity::{
     },
     model::{
         application::{
+            command::CommandOptionType,
             component::ButtonStyle,
             interaction::{
                 application_command::{
@@ -225,7 +226,7 @@ impl Handler {
 
         let mut filter = "";
         for field in &autocomplete.data.options {
-            if field.focused {
+            if field.focused && field.kind == CommandOptionType::String {
                 filter = field.value.as_ref().unwrap().as_str().unwrap();
             }
         }
@@ -237,6 +238,92 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             aliases = x
                 .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
+                .unwrap();
+        }
+        autocomplete
+            .create_autocomplete_response(&ctx.http, |response| {
+                for list in aliases {
+                    response.add_string_choice(&list, &list);
+                }
+                response
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn autocomplete_join(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
+        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
+        let member_admin = member
+            .permissions
+            .unwrap()
+            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+        let mut userid = member.user.id;
+
+        let mut filter = "";
+        for field in &autocomplete.data.options {
+            if field.kind == CommandOptionType::User {
+                let id_string = field.value.as_ref().unwrap();
+                userid = UserId {
+                    0: id_string.as_str().unwrap().parse::<u64>().unwrap(),
+                };
+            }
+            if field.focused && field.kind == CommandOptionType::String {
+                filter = field.value.as_ref().unwrap().as_str().unwrap();
+            }
+        }
+        let mut aliases: Vec<String> = Vec::new();
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
+            aliases = x
+                .get_list_joinable_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin)
+                .unwrap();
+        }
+        autocomplete
+            .create_autocomplete_response(&ctx.http, |response| {
+                for list in aliases {
+                    response.add_string_choice(&list, &list);
+                }
+                response
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn autocomplete_leave(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
+        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
+        let member_admin = member
+            .permissions
+            .unwrap()
+            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+        let mut userid = member.user.id;
+
+        let mut filter = "";
+        for field in &autocomplete.data.options {
+            if field.kind == CommandOptionType::User {
+                let id_string = field.value.as_ref().unwrap();
+                userid = UserId {
+                    0: id_string.as_str().unwrap().parse::<u64>().unwrap(),
+                };
+            }
+            if field.focused && field.kind == CommandOptionType::String {
+                filter = field.value.as_ref().unwrap().as_str().unwrap();
+            }
+        }
+        let mut aliases: Vec<String> = Vec::new();
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        if let Ok(mut x) = db.clone().lock() {
+            aliases = x
+                .get_list_membership_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin)
                 .unwrap();
         }
         autocomplete
@@ -1429,15 +1516,13 @@ impl Handler {
             let proposals = x.get_proposals(guild_id).unwrap();
             for (name, timestamp, list_id) in proposals {
                 let votes = x.get_proposal_votes(list_id);
-                let seconds = timeout - (now - timestamp);
-                let (minutes, seconds) = (seconds / 60, seconds % 60);
+                let minutes = (timeout - (now - timestamp)) / 60;
                 let (hours, minutes) = (minutes / 60, minutes % 60);
-                let (days, hours) = (hours / 24, hours % 24);
                 embed.field(
                     name,
                     format!(
-                        "Has {} / {} votes, {} days, {} hours, {} minutes and {} seconds remaining.",
-                        votes, threshold, days, hours, minutes, seconds,
+                        "Has {} / {} votes, {} hours and {} minutes remaining.",
+                        votes, threshold, hours, minutes,
                     ),
                     true,
                 );
@@ -1501,6 +1586,10 @@ impl EventHandler for Handler {
                 "configure" => self.autocomplete_configure(&completable, &ctx).await,
                 "alias" => self.autocomplete_alias(&completable, &ctx).await,
                 "remove_alias" => self.autocomplete_alias(&completable, &ctx).await,
+                "join" => self.autocomplete_join(&completable, &ctx).await,
+                "leave" => self.autocomplete_leave(&completable, &ctx).await,
+                "add" => self.autocomplete_join(&completable, &ctx).await,
+                "kick" => self.autocomplete_leave(&completable, &ctx).await,
                 _ => (),
             }
         } else if let Interaction::MessageComponent(component) = interaction {

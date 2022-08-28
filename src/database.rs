@@ -347,6 +347,69 @@ pub mod data_access {
             Ok(lists)
         }
 
+        pub fn get_list_membership_by_search(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+            amount: usize,
+            filter: &str,
+            show_all: bool,
+        ) -> Result<Vec<String>, Error> {
+            let lists_query = "SELECT alias.name \
+                FROM lists, alias \
+                WHERE lists.guild_id=:guid \
+                AND alias.name LIKE '%' || :filter || '%' \
+                AND alias.list_id = lists.id \
+                AND (NOT lists.ping_permission = :permissiondeny OR :show_all)
+                AND EXISTS ( \
+                    SELECT id FROM memberships WHERE \
+                    memberships.user_id = :user \
+                    AND memberships.list_id = lists.id) \
+                ORDER BY alias.name ASC \
+                LIMIT 0, :amt";
+            let mut stmt = self.db.prepare(lists_query)?;
+            let mut rows = stmt.query(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() }
+            )?;
+
+            let mut lists = Vec::new();
+            while let Some(row) = rows.next()? {
+                lists.push(row.get::<usize, String>(0)?);
+            }
+            Ok(lists)
+        }
+
+        pub fn get_list_joinable_by_search(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+            amount: usize,
+            filter: &str,
+            show_all: bool,
+        ) -> Result<Vec<String>, Error> {
+            let lists_query = "SELECT alias.name \
+                FROM lists, alias \
+                WHERE lists.guild_id=:guid \
+                AND alias.name LIKE '%' || :filter || '%' \
+                AND alias.list_id = lists.id \
+                AND (NOT lists.ping_permission = :permissiondeny OR :show_all)
+                AND NOT EXISTS ( \
+                    SELECT id FROM memberships WHERE \
+                    memberships.user_id = :user \
+                    AND memberships.list_id = lists.id) \
+                ORDER BY alias.name ASC \
+                LIMIT 0, :amt";
+            let mut stmt = self.db.prepare(lists_query)?;
+            let mut rows = stmt.query(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() }
+            )?;
+
+            let mut lists = Vec::new();
+            while let Some(row) = rows.next()? {
+                lists.push(row.get::<usize, String>(0)?);
+            }
+            Ok(lists)
+        }
         // List memberships
 
         pub fn has_member(&mut self, member_id: UserId, list_id: ListId) -> bool {

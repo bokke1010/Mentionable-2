@@ -85,6 +85,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -92,6 +93,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -99,6 +101,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -106,6 +109,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -113,6 +117,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                 })
                 .create_application_command(|command| {
@@ -125,6 +130,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -132,6 +138,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -139,6 +146,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -146,6 +154,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -153,6 +162,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                 })
                 .create_application_command(|command| {
@@ -247,6 +257,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -254,6 +265,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -261,6 +273,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -268,6 +281,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -275,6 +289,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                 })
                 .create_application_command(|command| { // mod only
@@ -295,6 +310,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -302,6 +318,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -309,6 +326,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -316,6 +334,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                         .create_option(|option| {
                             option
@@ -323,6 +342,7 @@ pub mod guild_commands {
                                 .description("A single pinglist")
                                 .kind(CommandOptionType::String)
                                 .required(false)
+                                .set_autocomplete(true)
                         })
                 })
                 .create_application_command(|command| { // mod only
