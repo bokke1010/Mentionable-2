@@ -1,6 +1,6 @@
 pub mod structures {
 
-    use serenity::model::id::GuildId;
+    use serenity::model::id::{ChannelId, GuildId, RoleId};
     use std::cmp::max;
 
     pub type ListId = u64;
@@ -15,7 +15,7 @@ pub mod structures {
         pub visible: bool,
     }
 
-    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     pub enum PERMISSION {
         NEUTRAL = 0,
         DENY = 1,
@@ -33,6 +33,45 @@ pub mod structures {
                 1 => PERMISSION::DENY,
                 2 => PERMISSION::ALLOW,
                 _ => panic!("Invalid permission value"),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub enum LOGTRIGGER {
+        RoleAdd(RoleId),
+        RoleRemove(RoleId),
+        JoinServer(),
+        LeaveServer(),
+    }
+
+    impl LOGTRIGGER {
+        pub fn toint(self) -> u64 {
+            match self {
+                LOGTRIGGER::RoleAdd(_) => 0,
+                LOGTRIGGER::RoleRemove(_) => 1,
+                LOGTRIGGER::JoinServer() => 2,
+                LOGTRIGGER::LeaveServer() => 3,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub enum LOGCONDITION {
+        HasRole(RoleId),
+    }
+
+    impl LOGCONDITION {
+        pub fn toint(self) -> u64 {
+            match self {
+                LOGCONDITION::HasRole(_) => 0,
+            }
+        }
+
+        pub fn fromint(cond_type: u64, ref_id: u64) -> LOGCONDITION {
+            match cond_type {
+                0 => LOGCONDITION::HasRole(RoleId::from(ref_id)),
+                _ => panic!("invalid int"),
             }
         }
     }

@@ -1,9 +1,3 @@
-use std::{
-    cmp::{max, min},
-    env,
-    sync::{Arc, Mutex},
-};
-
 use serenity::{
     async_trait,
     builder::{
@@ -12,7 +6,7 @@ use serenity::{
     model::{
         application::{
             command::CommandOptionType,
-            component::ButtonStyle,
+            component::{ButtonStyle, InputTextStyle},
             interaction::{
                 application_command::{
                     ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
@@ -23,13 +17,21 @@ use serenity::{
             },
         },
         gateway::Ready,
+        guild::Member,
         id::{ChannelId, GuildId, RoleId, UserId},
+        user::User,
     },
     prelude::*,
 };
+use std::{
+    cmp::{max, min},
+    collections::BTreeSet,
+    env,
+    sync::{Arc, Mutex},
+};
 
 mod structures;
-use structures::structures::{ListId, PERMISSION};
+use structures::structures::{ListId, LOGCONDITION, LOGTRIGGER, PERMISSION};
 
 mod guild_commands;
 use crate::guild_commands::guild_commands::add_all_application_commands;
@@ -97,7 +99,7 @@ impl Handler {
 
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut list_ids: Vec<ListId> = vec![];
-        let mut members: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut members: BTreeSet<u64> = BTreeSet::new();
         let mut invalid_lists: Vec<(String, ListInvalidReasons)> = vec![];
 
         let mut data = ctx.data.write().await;
@@ -1555,6 +1557,70 @@ impl Handler {
         self.check_proposal(list_id, ctx).await;
         component.defer(&ctx).await.unwrap();
     }
+
+    async fn check_triggers(&self, ctx: &Context, guild_id: GuildId, triggers: Vec<LOGTRIGGER>) {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        if let Ok(mut x) = db.clone().lock() {
+            for trigger in triggers {
+                if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
+                    let mut valid = true;
+                    let conditions = x.get_response_conditions(id).unwrap();
+                    for condition in conditions {
+                        match condition {
+                            (LOGCONDITION::HasRole(role_id), invert, _) => {
+                                valid = false;
+                                panic!("deeply nested");
+                            }
+                        }
+                    }
+                    if !valid {
+                        continue;
+                    }
+                    // self.execute_trigger(trigger).await;
+                }
+            }
+        }
+    }
+
+    async fn execute_trigger(&self, trigger: LOGTRIGGER) {}
+
+    async fn handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        // serenity::builder::CreateInteractionResponse;
+
+        let mut action_row = CreateActionRow::default();
+        action_row.create_input_text(|text| {
+            text.custom_id("top")
+                .style(InputTextStyle::Short)
+                .label("Top field")
+                .value("qwerty")
+        });
+        let mut second_row = CreateActionRow::default();
+        second_row.create_input_text(|text| {
+            text.custom_id("main")
+                .style(InputTextStyle::Paragraph)
+                .label("big field")
+                .value("asdfghjklzxcvbnm")
+        });
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::Modal)
+                    .interaction_response_data(|modal| {
+                        modal
+                            .title("test")
+                            .custom_id("AAA")
+                            .content("test2")
+                            .components(|component| {
+                                component
+                                    .add_action_row(action_row)
+                                    .add_action_row(second_row)
+                            })
+                    })
+            })
+            .await
+            .unwrap();
+    }
 }
 
 #[async_trait]
@@ -1563,6 +1629,7 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             match command.data.name.as_str() {
                 "ping" => self.handle_ping(&command, &ctx).await,
+                "ping with context" => self.handle_context_ping(&command, &ctx).await,
                 "join" => self.handle_join(&command, &ctx).await,
                 "leave" => self.handle_leave(&command, &ctx).await,
                 "create" => self.handle_create(&command, &ctx).await,
@@ -1605,7 +1672,68 @@ impl EventHandler for Handler {
                 "propose" => self.propose_vote_from_component(&component, &ctx).await,
                 _ => (),
             }
+        } else if let Interaction::ModalSubmit(modal) = interaction {
+            modal
+                .create_interaction_response(&ctx.http, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| message.content("Succes"))
+                })
+                .await
+                .unwrap();
         }
+    }
+
+    async fn guild_member_update(
+        &self,
+        ctx: Context,
+        old_if_available: Option<Member>,
+        new: Member,
+    ) {
+        if let Some(old) = old_if_available {
+            let oldset = BTreeSet::from_iter(old.roles);
+            let newset = BTreeSet::from_iter(new.roles);
+
+            self.check_triggers(
+                &ctx,
+                new.guild_id,
+                oldset
+                    .difference(&newset)
+                    .map(|id| LOGTRIGGER::RoleRemove(*id))
+                    .collect(),
+            )
+            .await;
+            self.check_triggers(
+                &ctx,
+                new.guild_id,
+                newset
+                    .difference(&oldset)
+                    .map(|id| LOGTRIGGER::RoleAdd(*id))
+                    .collect(),
+            )
+            .await;
+        } else {
+            println!(
+                "could not resolve old roles of member with id {}",
+                new.user.id
+            );
+        }
+    }
+
+    async fn guild_member_removal(
+        &self,
+        ctx: Context,
+        guild_id: GuildId,
+        _user: User,
+        _member_data_if_available: Option<Member>,
+    ) {
+        self.check_triggers(&ctx, guild_id, vec![LOGTRIGGER::LeaveServer()])
+            .await;
+    }
+
+    async fn guild_member_addition(&self, ctx: Context, _new_member: Member) {
+        self.check_triggers(&ctx, _new_member.guild_id, vec![LOGTRIGGER::JoinServer()])
+            .await;
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -1631,6 +1759,7 @@ impl EventHandler for Handler {
             }
         }
 
+        //TODO: move to DB loop.
         add_all_application_commands(&mut GuildId(466163515103641611), ctx).await;
     }
 }

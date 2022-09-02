@@ -1,6 +1,5 @@
 pub mod data_access {
-    use crate::structures::structures::PERMISSION;
-    use crate::structures::structures::{ListId, PingList};
+    use crate::structures::structures::{ListId, PingList, LOGCONDITION, LOGTRIGGER, PERMISSION};
     use rusqlite::{named_params, params, Connection, Error, Result};
     use serenity::model::id::*;
 
@@ -58,24 +57,19 @@ pub mod data_access {
                 public_commands     INTEGER DEFAULT 0, \
                 override_mentioning INTEGER DEFAULT 0, \
                 propose_permission  INTEGER DEFAULT 0 );\n\
-            CREATE TABLE IF NOT EXISTS log_role ( \
-                id                  INTEGER PRIMARY KEY, \
+            CREATE TABLE IF NOT EXISTS action_response ( \
+                id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER REFERENCES guilds(id), \
-                role_id             INTEGER NOT NULL, \
-                type                INTEGER, \
-                channelID           INTEGER, \
-                message             TEXT );\n\
-            CREATE TABLE IF NOT EXISTS log_role_condition ( \
+                trigger             INTEGER NOT NULL, \
+                trigger_id          INTEGER NOT NULL DEFAULT 0, \
+                response_channel    INTEGER NOT NULL, \
+                response_message    TEXT NOT NULL);\n\
+            CREATE TABLE IF NOT EXISTS action_response_condition ( \
                 id                  INTEGER PRIMARY KEY ASC, \
-                rolelogID           INTEGER NOT NULL REFERENCES rolelog(id), \
-                invert              INTEGER DEFAULT 0, \
-                type                INTEGER DEFAULT 0, \
-                acomp_id            INTEGER);\n\
-            CREATE TABLE IF NOT EXISTS log_message ( \
-                id                  INTEGER PRIMARY KEY ASC, \
+                rolelogID           INTEGER NOT NULL REFERENCES action_response(id), \
                 type                INTEGER DEFAULT 0, \
                 acomp_id            INTEGER, \
-                destination_channel INTEGER );\n\
+                invert              INTEGER DEFAULT 0);\n\
             CREATE TABLE IF NOT EXISTS proposals ( \
                 list_id             INTEGER PRIMARY KEY REFERENCES lists(id), \
                 timestamp           INTEGER NOT NULL );";
@@ -759,6 +753,181 @@ pub mod data_access {
                 ));
             }
             Ok(lists)
+        }
+
+        //ANCHOR: responding functions
+
+        // CREATE TABLE IF NOT EXISTS action_response ( \
+        //     id                  INTEGER PRIMARY KEY ASC, \
+        //     guild_id            INTEGER REFERENCES guilds(id), \
+        //     trigger             INTEGER NOT NULL, \
+        //     trigger_id          INTEGER NOT NULL DEFAULT 0, \
+        //     response_channel    INTEGER NOT NULL, \
+        //     response_message    TEXT NOT NULL);\n\
+        // CREATE TABLE IF NOT EXISTS action_response_condition ( \
+        //     id                  INTEGER PRIMARY KEY ASC, \
+        //     rolelogID           INTEGER NOT NULL REFERENCES action_response(id), \
+        //     type                INTEGER DEFAULT 0, \
+        //     acomp_id            INTEGER, \
+        //     invert              INTEGER DEFAULT 0);\n\
+
+        pub fn add_response(
+            &mut self,
+            guild_id: GuildId,
+            log_type: LOGTRIGGER,
+            response_channel: ChannelId,
+            response_message: String,
+        ) -> Result<u64, Error> {
+            // Check has response first
+            match log_type {
+                LOGTRIGGER::JoinServer() => {
+                    self.db.execute(
+                        "INSERT INTO action_response (guild_id, trigger, response_channel, response_message) VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            guild_id.as_u64(),
+                            log_type.toint(),
+                            response_channel.as_u64(),
+                            response_message
+                        ],
+                    )?;
+                }
+                LOGTRIGGER::LeaveServer() => {
+                    self.db.execute(
+                        "INSERT INTO action_response (guild_id, trigger, response_channel, response_message) VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            guild_id.as_u64(),
+                            log_type.toint(),
+                            response_channel.as_u64(),
+                            response_message
+                        ],
+                    )?;
+                }
+                LOGTRIGGER::RoleAdd(role_id) => {
+                    self.db.execute(
+                        "INSERT INTO action_response (guild_id, trigger, trigger_id, response_channel, response_message) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            guild_id.as_u64(),
+                            log_type.toint(),
+                            role_id.as_u64(),
+                            response_channel.as_u64(),
+                            response_message
+                        ],
+                    )?;
+                }
+                LOGTRIGGER::RoleRemove(role_id) => {
+                    self.db.execute(
+                        "INSERT INTO action_response (guild_id, trigger, trigger_id, response_channel, response_message) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            guild_id.as_u64(),
+                            log_type.toint(),
+                            role_id.as_u64(),
+                            response_channel.as_u64(),
+                            response_message
+                        ],
+                    )?;
+                }
+            };
+            Ok(self.db.last_insert_rowid() as u64)
+        }
+
+        pub fn has_response(
+            &mut self,
+            guild_id: GuildId,
+            log_type: LOGTRIGGER,
+        ) -> Result<Option<u64>, Error> {
+            match log_type {
+                LOGTRIGGER::RoleAdd(role_id) | LOGTRIGGER::RoleRemove(role_id) => {
+                    match self.db
+                        .query_row(
+                            "SELECT id FROM action_response WHERE guild_id = ?1 AND trigger = ?2 AND trigger_id = ?3",
+                            params![guild_id.as_u64(), log_type.toint(), role_id.as_u64()],
+                            |row| row.get(0)
+                        )
+                    {
+                        Ok(id) => Ok(Some(id)),
+                        Result::Err(Error::QueryReturnedNoRows) => Ok(None),
+                        Result::Err(er) => Err(er)
+                    }
+                },
+                LOGTRIGGER::JoinServer() | LOGTRIGGER::LeaveServer() => {
+                    match self.db
+                    .query_row(
+                        "SELECT id FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
+                        params![guild_id.as_u64(), log_type.toint()],
+                        |row| row.get(0)
+                    )
+                {
+                    Ok(id) => Ok(Some(id)),
+                    Result::Err(Error::QueryReturnedNoRows) => Ok(None),
+                    Result::Err(er) => Err(er)
+                }
+                }
+            }
+        }
+
+        pub fn delete_response(
+            &mut self,
+            guild_id: GuildId,
+            log_type: LOGTRIGGER,
+            response_channel: ChannelId,
+        ) -> Result<(), Error> {
+            self.db.execute(
+                "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2 AND response_channel = ?3",
+                params![
+                    guild_id.as_u64(),
+                    log_type.toint(),
+                    response_channel.as_u64(),
+                ],
+            )?;
+            Ok(())
+        }
+
+        // conditions
+        pub fn add_response_condition(
+            &mut self,
+            log_id: u64,
+            log_type: LOGCONDITION,
+            invert: bool,
+        ) -> Result<(), Error> {
+            match log_type {
+                LOGCONDITION::HasRole(role_id) => {
+                    self.db.execute(
+                        "INSERT INTO action_response_condition (rolelogID, type, acomp_id, invert) VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            log_id,
+                            log_type.toint(),
+                            role_id.as_u64(),
+                            invert
+                        ],
+                    )?;
+                }
+            }
+            Ok(())
+        }
+
+        pub fn remove_response_condition(&mut self, condition_id: u64) -> Result<(), Error> {
+            self.db.execute(
+                "DELETE FROM action_response_condition WHERE id = ?1",
+                params![condition_id,],
+            )?;
+            Ok(())
+        }
+
+        pub fn get_response_conditions(
+            &self,
+            log_id: u64,
+        ) -> Result<Vec<(LOGCONDITION, bool, u64)>, Error> {
+            let mut stmt = self.db.prepare(
+                "SELECT type, acomp_id, invert, id FROM action_response_condition WHERE rolelogID = ?1",
+            )?;
+            let mut rows = stmt.query(params![log_id])?;
+            let mut conditions = Vec::new();
+            while let Some(row) = rows.next()? {
+                let (logtype, id) = (row.get::<usize, u64>(0)?, row.get::<usize, u64>(1)?);
+                let cond = LOGCONDITION::fromint(logtype, id);
+                conditions.push((cond, row.get::<usize, bool>(2)?, row.get::<usize, u64>(3)?));
+            }
+            Ok(conditions)
         }
     }
 }

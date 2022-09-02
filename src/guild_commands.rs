@@ -2,7 +2,7 @@ pub mod guild_commands {
 
     use serenity::{
         model::{
-            application::command::{Command, CommandOptionType},
+            application::command::{Command, CommandOptionType, CommandType},
             id::GuildId,
             permissions,
         },
@@ -58,11 +58,11 @@ pub mod guild_commands {
                                 .set_autocomplete(true)
                         })
                 })
-                // .create_application_command(|command| { //ANCHOR ping context
-                //     command
-                //         .name("ping")
-                //         .kind(ApplicationCommandType::Message)
-                // })
+                .create_application_command(|command| { //ANCHOR ping context
+                    command
+                        .name("ping with context")
+                        .kind(CommandType::Message)
+                })
                 .create_application_command(|command| {
                     command
                         .name("create")
@@ -219,8 +219,7 @@ pub mod guild_commands {
                                 .kind(CommandOptionType::String)
                                 .required(true)
                         })
-                })
-                .create_application_command(|command| {
+                })                .create_application_command(|command| {
                     command
                         .name("list_proposals")
                         .description("See proposed lists")
@@ -538,6 +537,7 @@ pub mod guild_commands {
                             })
                         })
                 })
+
         }).await {
             Ok(result) => result,
             Err(error) => panic!("Problem assembling commands: {:?}", error),
