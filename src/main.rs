@@ -115,15 +115,15 @@ impl Handler {
             } else {
                 PERMISSION::NEUTRAL
             };
-            let mut override_cooldown = -1;
+            let mut ignore_cooldown = member_admin;
+
+            let (_, user_canping, user_ignore_cooldown) = x.get_user_permissions(guild_id, member.user.id);
+            ignore_cooldown = ignore_cooldown || user_ignore_cooldown;
+            override_canping = override_canping.combine(user_canping);
             for role_id in role_ids {
-                let (_, role_canping, role_cooldown) = x.get_role_permissions(guild_id, *role_id);
+                let (_, role_canping, role_ignore_cooldown) = x.get_role_permissions(guild_id, *role_id);
                 override_canping = override_canping.combine(role_canping);
-                if override_cooldown * role_cooldown > 0 {
-                    override_cooldown = min(override_cooldown, role_cooldown);
-                } else {
-                    override_cooldown = max(override_cooldown, role_cooldown)
-                }
+                ignore_cooldown = ignore_cooldown || role_ignore_cooldown;
             }
 
             let (general_cooldown, general_canping, pingcooldown) = x.get_guild_ping_data(guild_id);
@@ -135,13 +135,13 @@ impl Handler {
                 if !general_canping {
                     invalid_lists.push(("all".to_string(), ListInvalidReasons::GuildRestrictPing));
                 } else if channel_restrict_ping {
-                    invalid_lists.push(("".to_string(), ListInvalidReasons::ChannelRestrictPing));
+                    invalid_lists.push(("all".to_string(), ListInvalidReasons::ChannelRestrictPing));
                 }
             }
 
             let last_global = global.entry(guild_id).or_insert(0);
 
-            if general_cooldown && *last_global + (pingcooldown as u64) >= timestamp {
+            if general_cooldown && !ignore_cooldown && *last_global + pingcooldown >= timestamp {
                 invalid_lists.push(("all".to_string(), ListInvalidReasons::OnGlobalCooldown));
             }
 
@@ -151,7 +151,11 @@ impl Handler {
 
                 if let Ok(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
-                    let (list_cooldown, _, list_restrict_ping) = x.get_list_permissions(list_id);
+                    let (mut list_cooldown, _, list_restrict_ping) = x.get_list_permissions(list_id);
+                    if list_cooldown == -1 {
+                        list_cooldown = pingcooldown as i64;
+                    }
+
 
                     if list_restrict_ping && !member_admin {
                         invalid_lists
@@ -1194,7 +1198,7 @@ impl Handler {
                                 if let CommandDataOptionValue::Integer(ref cooldown) =
                                     *resolved_value
                                 {
-                                    x.set_cooldown(list, *cooldown as u64).unwrap();
+                                    x.set_cooldown(list, *cooldown).unwrap();
                                     embed.field("set cooldown", format!("{}", cooldown), false);
                                 } else {
                                     panic!("The parameter cooldown for configure list is incorrectly configured");

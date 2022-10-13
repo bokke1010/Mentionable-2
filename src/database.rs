@@ -41,7 +41,7 @@ pub mod data_access {
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER REFERENCES guilds(id), \
                 description         TEXT, \
-                cooldown            INTEGER DEFAULT 0 CHECK( cooldown >= 0 ), \
+                cooldown            INTEGER DEFAULT -1 CHECK( cooldown >= -1 ), \
                 join_permission     INTEGER DEFAULT 0 CHECK( join_permission >= 0 AND join_permission <= 2 ), \
                 ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2 ), \
                 visible             INTEGER DEFAULT 1 CHECK( visible = 0 OR visible = 1));\n\
@@ -51,14 +51,14 @@ pub mod data_access {
                 role_id             INTEGER UNIQUE NOT NULL, \
                 propose_permission  INTEGER DEFAULT 0 CHECK( propose_permission >= 0 AND propose_permission <= 2), \
                 ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2), \
-                ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
+                ignore_gbcooldown   INTEGER DEFAULT 0 CHECK( ignore_gbcooldown = 0 OR ignore_gbcooldown = 1 ) );\n\
             CREATE TABLE IF NOT EXISTS user_settings ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER NOT NULL REFERENCES guilds(id), \
                 user_id             INTEGER UNIQUE NOT NULL, \
                 propose_permission  INTEGER DEFAULT 0 CHECK( propose_permission >= 0 AND propose_permission <= 2), \
                 ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2), \
-                ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
+                ignore_gbcooldown   INTEGER DEFAULT 0 CHECK( ignore_gbcooldown = 0 OR ignore_gbcooldown = 1 ) );\n\
             CREATE TABLE IF NOT EXISTS channel_settings ( \
                 channel_id          INTEGER PRIMARY KEY, \
                 public_commands     INTEGER DEFAULT 0, \
@@ -106,7 +106,7 @@ pub mod data_access {
             Ok(())
         }
 
-        pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (bool, bool, usize) {
+        pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (bool, bool, u64) {
             self.db
                 .query_row(
                     "SELECT general_cooldown, general_canping, pingcooldown FROM guilds WHERE id=?1",
@@ -114,7 +114,7 @@ pub mod data_access {
                     |row| Ok(
                     (row.get::<usize, bool>(0)?,
                     row.get::<usize, bool>(1)?,
-                    row.get::<usize, usize>(2)?))
+                    row.get::<usize, u64>(2)?))
                 )
                 .unwrap()
         }
@@ -199,7 +199,7 @@ pub mod data_access {
             )?;
             Ok(())
         }
-        pub fn set_cooldown(&mut self, list_id: ListId, value: u64) -> Result<(), Error> {
+        pub fn set_cooldown(&mut self, list_id: ListId, value: i64) -> Result<(), Error> {
             self.db.execute(
                 "UPDATE lists SET cooldown = ?1 WHERE id = ?2",
                 params![value, list_id],
@@ -225,14 +225,14 @@ pub mod data_access {
 
         //Getters
 
-        pub fn get_list_permissions(&self, list_id: ListId) -> (u64, bool, bool) {
+        pub fn get_list_permissions(&self, list_id: ListId) -> (i64, bool, bool) {
             self.db
                 .query_row(
                     "SELECT cooldown, join_permission, ping_permission FROM lists WHERE id=?1",
                     params![list_id],
                     |row| {
                         Ok((
-                            row.get::<usize, u64>(0)?,
+                            row.get::<usize, i64>(0)?,
                             row.get::<usize, bool>(1)?,
                             row.get::<usize, bool>(2)?,
                         ))
@@ -292,7 +292,7 @@ pub mod data_access {
                     guild_id: guild_id,
                     description: row.get::<usize, String>(1)?,
                     visible: row.get::<usize, bool>(2)?,
-                    cooldown: row.get::<usize, u64>(5)?,
+                    cooldown: row.get::<usize, i64>(5)?,
                     join_permission: PERMISSION::fromint(row.get::<usize, u64>(3)?),
                     ping_permission: PERMISSION::fromint(row.get::<usize, u64>(4)?),
                 });
@@ -474,7 +474,7 @@ pub mod data_access {
             &mut self,
             guild_id: GuildId,
             role_id: RoleId,
-        ) -> (PERMISSION, PERMISSION, i64) {
+        ) -> (PERMISSION, PERMISSION, bool) {
             self.ensure_role_present(guild_id, role_id).unwrap();
             self.db
                 .query_row(
@@ -484,7 +484,7 @@ pub mod data_access {
                         Ok((
                             PERMISSION::fromint(row.get::<usize, u64>(0)?),
                             PERMISSION::fromint(row.get::<usize, u64>(1)?),
-                            row.get::<usize, i64>(2)?,
+                            row.get::<usize, bool>(2)?,
                         ))
                     },
                 )
@@ -547,7 +547,7 @@ pub mod data_access {
             &mut self,
             guild_id: GuildId,
             user_id: UserId,
-        ) -> (PERMISSION, PERMISSION, i64) {
+        ) -> (PERMISSION, PERMISSION, bool) {
             self.ensure_user_present(guild_id, user_id).unwrap();
             self.db
                 .query_row(
@@ -557,7 +557,7 @@ pub mod data_access {
                         Ok((
                             PERMISSION::fromint(row.get::<usize, u64>(0)?),
                             PERMISSION::fromint(row.get::<usize, u64>(1)?),
-                            row.get::<usize, i64>(2)?,
+                            row.get::<usize, bool>(2)?,
                         ))
                     },
                 )

@@ -10,7 +10,7 @@ pub mod structures {
         pub id: u64,
         pub guild_id: GuildId,
         pub description: String,
-        pub cooldown: u64,
+        pub cooldown: i64,
         pub join_permission: PERMISSION,
         pub ping_permission: PERMISSION,
         pub visible: bool,
