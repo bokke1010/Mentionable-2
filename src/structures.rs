@@ -2,6 +2,7 @@ pub mod structures {
 
     use serenity::model::id::{ChannelId, GuildId, RoleId};
     use std::cmp::max;
+    use std::fmt;
 
     pub type ListId = u64;
 
@@ -22,6 +23,20 @@ pub mod structures {
         ALLOW = 2,
     }
 
+    impl fmt::Display for PERMISSION {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(
+                f,
+                "{}",
+                match self {
+                    PERMISSION::NEUTRAL => "Neutral",
+                    PERMISSION::DENY => "Deny",
+                    PERMISSION::ALLOW => "Allow",
+                }
+            )
+        }
+    }
+
     impl PERMISSION {
         pub fn combine(self, other: PERMISSION) -> PERMISSION {
             max(self, other)
@@ -33,6 +48,15 @@ pub mod structures {
                 1 => PERMISSION::DENY,
                 2 => PERMISSION::ALLOW,
                 _ => panic!("Invalid permission value"),
+            }
+        }
+
+        pub fn from_str(value: &str) -> Result<PERMISSION, &str> {
+            match value {
+                "0" | "NEUTRAL" => Ok(PERMISSION::NEUTRAL),
+                "1" | "DENY" => Ok(PERMISSION::NEUTRAL),
+                "2" | "ALLOW" => Ok(PERMISSION::NEUTRAL),
+                _ => Err("Invalid string"),
             }
         }
     }

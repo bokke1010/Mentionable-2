@@ -406,22 +406,66 @@ pub mod guild_commands {
                             })
                             .create_sub_option(|option| {
                                 option
-                                    .name("disable_propose")
+                                    .name("propose")
                                     .description("Toggle whether or not people with this role can use /propose.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
-                                    .name("disable_ping")
+                                    .name("ping")
                                     .description("Toggle whether or not people with this role can use /ping.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
                                     .name("exclude_from_cooldown")
                                     .description("Toggle whether or not people with this role can ignore the guild-wide cooldown.")
+                                    .kind(CommandOptionType::Boolean)
+                                    .required(false)
+                            })
+                        })
+                        .create_option(|catagory| {
+                            catagory.name("user").description("Settings that affect a specific user")
+                            .kind(CommandOptionType::SubCommand)
+                            .create_sub_option(|option| {
+                                option
+                                    .name("user")
+                                    .description("The user to configure.")
+                                    .kind(CommandOptionType::User)
+                                    .required(true)
+                            })
+                            .create_sub_option(|option| {
+                                option
+                                    .name("propose")
+                                    .description("Toggle whether or not people with this user can use /propose.")
+                                    .kind(CommandOptionType::String)
+                                    .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
+                            })
+                            .create_sub_option(|option| {
+                                option
+                                    .name("ping")
+                                    .description("Toggle whether or not people with this user can use /ping.")
+                                    .kind(CommandOptionType::String)
+                                    .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
+                            })
+                            .create_sub_option(|option| {
+                                option
+                                    .name("exclude_from_cooldown")
+                                    .description("Toggle whether or not people with this user can ignore the guild-wide cooldown.")
                                     .kind(CommandOptionType::Boolean)
                                     .required(false)
                             })

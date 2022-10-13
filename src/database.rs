@@ -52,6 +52,13 @@ pub mod data_access {
                 propose_permission  INTEGER DEFAULT 0 CHECK( propose_permission >= 0 AND propose_permission <= 2), \
                 ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2), \
                 ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
+            CREATE TABLE IF NOT EXISTS user_settings ( \
+                id                  INTEGER PRIMARY KEY ASC, \
+                guild_id            INTEGER NOT NULL REFERENCES guilds(id), \
+                user_id             INTEGER UNIQUE NOT NULL, \
+                propose_permission  INTEGER DEFAULT 0 CHECK( propose_permission >= 0 AND propose_permission <= 2), \
+                ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2), \
+                ignore_gbcooldown   INTEGER DEFAULT -1 CHECK( ignore_gbcooldown >= -1) );\n\
             CREATE TABLE IF NOT EXISTS channel_settings ( \
                 channel_id          INTEGER PRIMARY KEY, \
                 public_commands     INTEGER DEFAULT 0, \
@@ -496,12 +503,12 @@ pub mod data_access {
             &mut self,
             guild_id: GuildId,
             role_id: RoleId,
-            deny: bool,
+            perm: PERMISSION,
         ) -> Result<(), Error> {
             self.ensure_role_present(guild_id, role_id)?;
             self.db.execute(
                 "UPDATE role_settings SET propose_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-                params![deny, guild_id.as_u64(), role_id.as_u64()],
+                params![perm as u64, guild_id.as_u64(), role_id.as_u64()],
             )?;
             Ok(())
         }
@@ -510,12 +517,12 @@ pub mod data_access {
             &mut self,
             guild_id: GuildId,
             role_id: RoleId,
-            deny: bool,
+            perm: PERMISSION,
         ) -> Result<(), Error> {
             self.ensure_role_present(guild_id, role_id)?;
             self.db.execute(
                 "UPDATE role_settings SET ping_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-                params![deny, guild_id.as_u64(), role_id.as_u64()],
+                params![perm as u64, guild_id.as_u64(), role_id.as_u64()],
             )?;
             Ok(())
         }
@@ -530,6 +537,79 @@ pub mod data_access {
             self.db.execute(
                 "UPDATE role_settings SET ignore_gbcooldown = ?1 WHERE role_id=?2 AND guild_id=?3",
                 params![deny, guild_id.as_u64(), role_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        //ANCHOR user functions
+
+        pub fn get_user_permissions(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+        ) -> (PERMISSION, PERMISSION, i64) {
+            self.ensure_user_present(guild_id, user_id).unwrap();
+            self.db
+                .query_row(
+                    "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM user_settings WHERE user_id=?1 AND guild_id=?2",
+                    params![user_id.as_u64(), guild_id.as_u64()],
+                    |row| {
+                        Ok((
+                            PERMISSION::fromint(row.get::<usize, u64>(0)?),
+                            PERMISSION::fromint(row.get::<usize, u64>(1)?),
+                            row.get::<usize, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        }
+
+        fn ensure_user_present(&mut self, guild_id: GuildId, user_id: UserId) -> Result<(), Error> {
+            self.db.execute(
+                "INSERT OR IGNORE INTO user_settings (guild_id, user_id) VALUES (?1, ?2)",
+                [guild_id.as_u64(), user_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_user_propose(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+            perm: PERMISSION,
+        ) -> Result<(), Error> {
+            self.ensure_user_present(guild_id, user_id)?;
+            self.db.execute(
+                "UPDATE user_settings SET propose_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_user_canping(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+            perm: PERMISSION,
+        ) -> Result<(), Error> {
+            self.ensure_user_present(guild_id, user_id)?;
+            self.db.execute(
+                "UPDATE user_settings SET ping_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+            )?;
+            Ok(())
+        }
+
+        pub fn set_user_cooldown(
+            &mut self,
+            guild_id: GuildId,
+            user_id: UserId,
+            deny: bool,
+        ) -> Result<(), Error> {
+            self.ensure_user_present(guild_id, user_id)?;
+            self.db.execute(
+                "UPDATE user_settings SET ignore_gbcooldown = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![deny, guild_id.as_u64(), user_id.as_u64()],
             )?;
             Ok(())
         }
@@ -863,6 +943,20 @@ pub mod data_access {
                 }
                 }
             }
+        }
+
+        pub fn get_response(
+            &self,
+            guild_id: GuildId,
+            log_id: u64,
+        ) -> Result<(ChannelId, String), Error> {
+            self.db.query_row(
+                "SELECT response_channel, response_message FROM action_response WHERE guild_id = ?1 AND id = ?2",
+                params![guild_id.as_u64(), log_id],
+                |row| Ok(
+                    (ChannelId( row.get::<usize, u64>(0)?),
+                    row.get::<usize, String>(0)?,)
+            ))
         }
 
         pub fn delete_response(

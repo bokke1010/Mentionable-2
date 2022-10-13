@@ -1053,26 +1053,32 @@ impl Handler {
                     };
                     for setting in options {
                         match setting.name.as_str() {
-                            "disable_propose" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_role_propose(guild_id, role, *b).unwrap();
+                            "propose" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref propose_perm) =
+                                    *resolved_value
+                                {
+                                    let perm = PERMISSION::from_str(&propose_perm).unwrap();
+                                    x.set_role_propose(guild_id, role, perm).unwrap();
                                     embed.field(
                                         "disable propose",
-                                        format!("Proposes disabled: {}", b),
+                                        format!("Proposal permission: {}", perm),
                                         false,
                                     );
                                 } else {
-                                    panic!("The parameter disable_propose for configure role is incorrectly configured");
+                                    panic!("The parameter propose for configure role is incorrectly configured");
                                 }
                             }
-                            "disable_ping" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_role_canping(guild_id, role, *b).unwrap();
-                                    embed.field("disable ping", format!("{}", b), false);
+                            "ping" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref mention_perm) =
+                                    *resolved_value
+                                {
+                                    let perm = PERMISSION::from_str(&mention_perm).unwrap();
+                                    x.set_role_canping(guild_id, role, perm).unwrap();
+                                    embed.field("Ping permission: ", format!("{}", perm), false);
                                 } else {
-                                    panic!("The parameter disable_ping for configure role is incorrectly configured");
+                                    panic!("The parameter ping for configure role is incorrectly configured");
                                 }
                             }
                             "exclude_from_cooldown" => {
@@ -1080,6 +1086,65 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
                                     x.set_role_cooldown(guild_id, role, *b).unwrap();
                                     embed.field("role cooldown", format!("{}", b), false);
+                                } else {
+                                    panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "user" => {
+                    let user_value = options
+                        .iter()
+                        .filter(|x| x.name.as_str() == "user")
+                        .next()
+                        .expect("No user argument given")
+                        .resolved
+                        .as_ref()
+                        .unwrap();
+                    let user: UserId = if let CommandDataOptionValue::User(ref target, _) = *user_value {
+                        target.id
+                    } else {
+                        panic!("List argument is not a valid integer")
+                    };
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "propose" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref propose_perm) =
+                                    *resolved_value
+                                {
+                                    let perm = PERMISSION::from_str(&propose_perm).unwrap();
+                                    x.set_user_propose(guild_id, user, perm).unwrap();
+                                    embed.field(
+                                        "disable propose",
+                                        format!("Proposal permission: {}", perm),
+                                        false,
+                                    );
+                                } else {
+                                    panic!("The parameter propose for configure user is incorrectly configured");
+                                }
+                            }
+                            "ping" => {
+                                let resolved_value = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::String(ref mention_perm) =
+                                    *resolved_value
+                                {
+                                    let perm = PERMISSION::from_str(&mention_perm).unwrap();
+                                    x.set_user_canping(guild_id, user, perm).unwrap();
+                                    embed.field("Ping permission: ", format!("{}", perm), false);
+                                } else {
+                                    panic!("The parameter ping for configure user is incorrectly configured");
+                                }
+                            }
+                            "exclude_from_cooldown" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                    x.set_user_cooldown(guild_id, user, *b).unwrap();
+                                    embed.field("user cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
                                 }
@@ -1194,22 +1259,10 @@ impl Handler {
                                 if let CommandDataOptionValue::String(ref mention_perm) =
                                     *resolved_value
                                 {
-                                    let perm = match mention_perm.as_str() {
-                                        "0" => PERMISSION::NEUTRAL,
-                                        "1" => PERMISSION::DENY,
-                                        "2" => PERMISSION::ALLOW,
-                                        _ => panic!("Invalid option in channel mentioning config"),
-                                    };
+                                    let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     embed.field(
                                         "set mentioning",
-                                        format!(
-                                            "{}",
-                                            match perm {
-                                                PERMISSION::NEUTRAL => "neutral",
-                                                PERMISSION::DENY => "deny",
-                                                PERMISSION::ALLOW => "allow",
-                                            }
-                                        ),
+                                        format!("{}", perm),
                                         false,
                                     );
                                     x.set_channel_mentioning(channel, perm).unwrap();
@@ -1220,22 +1273,10 @@ impl Handler {
                                 if let CommandDataOptionValue::String(ref propose_perm) =
                                     *resolved_value
                                 {
-                                    let perm = match propose_perm.as_str() {
-                                        "0" => PERMISSION::NEUTRAL,
-                                        "1" => PERMISSION::DENY,
-                                        "2" => PERMISSION::ALLOW,
-                                        _ => panic!("Invalid option in channel proposing config"),
-                                    };
+                                    let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     embed.field(
                                         "set proposing",
-                                        format!(
-                                            "{}",
-                                            match perm {
-                                                PERMISSION::NEUTRAL => "neutral",
-                                                PERMISSION::DENY => "deny",
-                                                PERMISSION::ALLOW => "allow",
-                                            }
-                                        ),
+                                        format!("{}", perm),
                                         false,
                                     );
                                     x.set_channel_proposing(channel, perm).unwrap()
@@ -1375,6 +1416,9 @@ impl Handler {
             };
             let (_, _, propose_base) = x.get_channel_permissions(guild_id, channel_id);
             override_canpropose = override_canpropose.combine(propose_base);
+
+            let (user_can_propose, ..) = x.get_user_permissions(guild_id, member.user.id);
+            override_canpropose = override_canpropose.combine(user_can_propose);
 
             for role_id in role_ids {
                 let (role_can_propose, ..) = x.get_role_permissions(guild_id, *role_id);
@@ -1558,7 +1602,13 @@ impl Handler {
         component.defer(&ctx).await.unwrap();
     }
 
-    async fn check_triggers(&self, ctx: &Context, guild_id: GuildId, triggers: Vec<LOGTRIGGER>) {
+    async fn check_triggers(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        member: &Member,
+        triggers: Vec<LOGTRIGGER>,
+    ) {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
@@ -1569,52 +1619,88 @@ impl Handler {
                     for condition in conditions {
                         match condition {
                             (LOGCONDITION::HasRole(role_id), invert, _) => {
-                                valid = false;
-                                panic!("deeply nested");
+                                valid &= member.roles.contains(&role_id) ^ invert;
                             }
                         }
                     }
                     if !valid {
                         continue;
                     }
+                    let (cid, cmsg) = x.get_response(guild_id, id).unwrap();
                     // self.execute_trigger(trigger).await;
                 }
             }
         }
     }
 
-    async fn execute_trigger(&self, trigger: LOGTRIGGER) {}
+    async fn execute_trigger(&self, trigger: LOGTRIGGER) {
+        match trigger {
+            LOGTRIGGER::JoinServer() => (),
+            LOGTRIGGER::LeaveServer() => (),
+            LOGTRIGGER::RoleAdd(role_id) => (),
+            LOGTRIGGER::RoleRemove(role_id) => (),
+        }
+    }
 
     async fn handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        // serenity::builder::CreateInteractionResponse;
-
-        let mut action_row = CreateActionRow::default();
-        action_row.create_input_text(|text| {
+        let mut main_question = CreateActionRow::default();
+        main_question.create_input_text(|text| {
             text.custom_id("top")
-                .style(InputTextStyle::Short)
-                .label("Top field")
-                .value("qwerty")
+                .style(InputTextStyle::Paragraph)
+                .label("Name something you like within Inverted Fate?")
+                .value("Doesn't have to be your favorite thing, but try to be somewhat specific")
         });
-        let mut second_row = CreateActionRow::default();
-        second_row.create_input_text(|text| {
+        let mut cominter = CreateActionRow::default();
+        cominter.create_input_text(|text| {
             text.custom_id("main")
                 .style(InputTextStyle::Paragraph)
-                .label("big field")
-                .value("asdfghjklzxcvbnm")
+                .label("What do you expect from the community?")
+                .value("Mostly anything is fine, don't worry!")
         });
+        let mut friends = CreateActionRow::default();
+        friends.create_input_text(|text| {
+            text.custom_id("side")
+                .style(InputTextStyle::Short)
+                .label("If a friend referred you, please mention them")
+        });
+        let mut cc = CreateActionRow::default();
+        cc.create_input_text(|text| {
+            text.custom_id("bottom")
+                .style(InputTextStyle::Paragraph)
+                .label("Are you a content creator?")
+                .value("Feel free to share links where applicable.")
+        });
+
+        let mut other_fandoms = CreateActionRow::default();
+        other_fandoms.create_input_text(|text| {
+            text.custom_id("bottomer")
+                .style(InputTextStyle::Paragraph)
+                .label("What other interests do you have?")
+                .value("Fandoms, games, hobbies etc. outside of undertale.")
+        });
+
+        
         command
             .create_interaction_response(&ctx.http, |response| {
                 response
                     .kind(InteractionResponseType::Modal)
                     .interaction_response_data(|modal| {
                         modal
-                            .title("test")
+                            .title("Welcome to the Inverted Fate community.")
                             .custom_id("AAA")
-                            .content("test2")
+                            .content("\
+                                We would like you to answer a few questions to make sure you are here in good faith.\
+                                There are no correct or incorrect answers to these questions.\
+                                Once we have had a chance to consider your answers, you will be let into the greater community.\
+                            ")
+                            
                             .components(|component| {
                                 component
-                                    .add_action_row(action_row)
-                                    .add_action_row(second_row)
+                                    .add_action_row(main_question)
+                                    .add_action_row(cominter)
+                                    .add_action_row(friends)
+                                    .add_action_row(cc)
+                                    .add_action_row(other_fandoms)
                             })
                     })
             })
@@ -1692,11 +1778,12 @@ impl EventHandler for Handler {
     ) {
         if let Some(old) = old_if_available {
             let oldset = BTreeSet::from_iter(old.roles);
-            let newset = BTreeSet::from_iter(new.roles);
+            let newset = BTreeSet::from_iter(new.roles.iter().cloned());
 
             self.check_triggers(
                 &ctx,
                 new.guild_id,
+                &new,
                 oldset
                     .difference(&newset)
                     .map(|id| LOGTRIGGER::RoleRemove(*id))
@@ -1706,6 +1793,7 @@ impl EventHandler for Handler {
             self.check_triggers(
                 &ctx,
                 new.guild_id,
+                &new,
                 newset
                     .difference(&oldset)
                     .map(|id| LOGTRIGGER::RoleAdd(*id))
@@ -1727,13 +1815,22 @@ impl EventHandler for Handler {
         _user: User,
         _member_data_if_available: Option<Member>,
     ) {
-        self.check_triggers(&ctx, guild_id, vec![LOGTRIGGER::LeaveServer()])
-            .await;
+        if let Some(member) = _member_data_if_available {
+            self.check_triggers(&ctx, guild_id, &member, vec![LOGTRIGGER::LeaveServer()])
+                .await;
+        } else {
+            println!("Member data of former member {} not found", _user.name);
+        }
     }
 
-    async fn guild_member_addition(&self, ctx: Context, _new_member: Member) {
-        self.check_triggers(&ctx, _new_member.guild_id, vec![LOGTRIGGER::JoinServer()])
-            .await;
+    async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+        self.check_triggers(
+            &ctx,
+            new_member.guild_id,
+            &new_member,
+            vec![LOGTRIGGER::JoinServer()],
+        )
+        .await;
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
