@@ -16,7 +16,7 @@ Medium priority, you can expect these in the initial release:
   x context menu for ping reply to
   x proposal form, including description?
   o Automatic logging for a channel / role.
-  ~ user exceptions
+  v user exceptions
 
 Low priority, often either complicated or less useful:
   x list groups / collections?

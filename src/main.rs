@@ -1616,22 +1616,19 @@ impl Handler {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            for trigger in triggers {
+            'outer: for trigger in triggers {
                 if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
-                    let mut valid = true;
-                    let conditions = x.get_response_conditions(id).unwrap();
-                    for condition in conditions {
-                        match condition {
-                            (LOGCONDITION::HasRole(role_id), invert, _) => {
-                                valid &= member.roles.contains(&role_id) ^ invert;
-                            }
+                    for condition in x.get_response_conditions(id).unwrap() {
+                        if !match condition {
+                            (LOGCONDITION::HasRole(role_id), invert, _) => 
+                                member.roles.contains(&role_id) ^ invert
+                        } {
+                            continue 'outer;
                         }
                     }
-                    if !valid {
-                        continue;
-                    }
-                    let (cid, cmsg) = x.get_response(guild_id, id).unwrap();
+                    let (channel_id, msg) = x.get_response(guild_id, id).unwrap();
                     // self.execute_trigger(trigger).await;
+                    
                 }
             }
         }
@@ -1722,13 +1719,14 @@ impl EventHandler for Handler {
                 "ping with context" => self.handle_context_ping(&command, &ctx).await,
                 "join" => self.handle_join(&command, &ctx).await,
                 "leave" => self.handle_leave(&command, &ctx).await,
-                "create" => self.handle_create(&command, &ctx).await,
                 "get" => self.handle_get(&command, &ctx).await,
                 "list" => self.handle_list(&command, &ctx).await,
-                "alias" => self.handle_alias(&command, &ctx).await,
                 "propose" => self.handle_propose(&command, &ctx).await,
                 "list_proposals" => self.handle_list_proposals(&command, &ctx).await,
                 // admin commands
+                "alias" => self.handle_alias(&command, &ctx).await,
+                "create" => self.handle_create(&command, &ctx).await,
+                // "remove" => self.handle_remove(&command, &ctx).await,
                 "add" => self.handle_add(&command, &ctx).await,
                 "kick" => self.handle_kick(&command, &ctx).await,
                 "remove_alias" => self.handle_remove_alias(&command, &ctx).await,
