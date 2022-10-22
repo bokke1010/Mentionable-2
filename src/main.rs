@@ -18,13 +18,13 @@ use serenity::{
         },
         gateway::Ready,
         guild::Member,
-        id::{ChannelId, GuildId, RoleId, UserId},
+        id::{ChannelId, GuildId, RoleId, UserId, MessageId},
         user::User,
     },
     prelude::*,
 };
 use std::{
-    cmp::{max, min},
+    cmp::{min},
     collections::BTreeSet,
     env,
     sync::{Arc, Mutex},
@@ -85,6 +85,19 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Failed to send text response.");
+    }
+
+    async fn send_not_allowed(command: &ApplicationCommandInteraction, ctx: &Context) {
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message|
+                        message.content("You do not have permission to use this command").ephemeral(true)
+                    )
             })
             .await
             .expect("Failed to send text response.");
@@ -270,9 +283,10 @@ impl Handler {
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.kind == CommandOptionType::User {
-                let id_string = field.value.as_ref().unwrap();
-                userid = UserId {
-                    0: id_string.as_str().unwrap().parse::<u64>().unwrap(),
+                let resolved_value = field.resolved.as_ref().unwrap();
+                userid = match resolved_value {
+                    CommandDataOptionValue::User(ref target, _) => target.id,
+                    _ => panic!("Invalid argument type"),
                 };
             }
             if field.focused && field.kind == CommandOptionType::String {
@@ -487,12 +501,7 @@ impl Handler {
 
         let as_admin = Handler::can_manage_messages(command);
         if !as_admin {
-            Handler::send_text(
-                String::from("You do not have permission to use this command."),
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
@@ -620,18 +629,24 @@ impl Handler {
     }
 
     async fn autocomplete_alias(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
-        const SUGGESTIONS: usize = 5;
         let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .unwrap()
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+        if !member_admin {
+            autocomplete.create_autocomplete_response(&ctx.http, |response| response).await.unwrap();
+            return
+        }
+        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        const SUGGESTIONS: usize = 5;
 
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.focused && field.name == "name" {
-                filter = field.value.as_ref().unwrap().as_str().unwrap();
+                if let CommandDataOptionValue::String(ref s) = field.resolved.as_ref().unwrap() {
+                    filter = s;
+                }
             }
         }
         let mut aliases: Vec<String> = Vec::new();
@@ -641,7 +656,7 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             aliases = x
-                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
+                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, true)
                 .unwrap();
         }
         autocomplete
@@ -688,12 +703,7 @@ impl Handler {
     async fn handle_add(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         if !Handler::can_manage_messages(command) {
-            Handler::send_text(
-                String::from("You do not have permission to use this command"),
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
@@ -740,12 +750,7 @@ impl Handler {
     async fn handle_kick(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         if !Handler::can_manage_messages(command) {
-            Handler::send_text(
-                String::from("You do not have permission to use this command"),
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
@@ -953,8 +958,8 @@ impl Handler {
     }
 
     async fn handle_configure(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let as_admin = Handler::can_manage_messages(command);
-        if !as_admin {
+        if !Handler::can_manage_messages(command) {
+            Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
         let guild_id: GuildId = command.guild_id.unwrap();
@@ -1059,8 +1064,7 @@ impl Handler {
                         match setting.name.as_str() {
                             "propose" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::String(ref propose_perm) =
-                                    *resolved_value
+                                if let CommandDataOptionValue::String(ref propose_perm) = resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     x.set_role_propose(guild_id, role, perm).unwrap();
@@ -1076,7 +1080,7 @@ impl Handler {
                             "ping" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     x.set_role_canping(guild_id, role, perm).unwrap();
@@ -1119,7 +1123,7 @@ impl Handler {
                             "propose" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref propose_perm) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     x.set_user_propose(guild_id, user, perm).unwrap();
@@ -1135,7 +1139,7 @@ impl Handler {
                             "ping" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     x.set_user_canping(guild_id, user, perm).unwrap();
@@ -1181,7 +1185,7 @@ impl Handler {
                             "description" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref description) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_description(list, description).unwrap();
                                     embed.field(
@@ -1196,7 +1200,7 @@ impl Handler {
                             "cooldown" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Integer(ref cooldown) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_cooldown(list, *cooldown).unwrap();
                                     embed.field("set cooldown", format!("{}", cooldown), false);
@@ -1207,7 +1211,7 @@ impl Handler {
                             "allow_join" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref joinable) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_joinable(list, *joinable).unwrap();
                                     embed.field("set joinable", format!("{}", joinable), false);
@@ -1218,7 +1222,7 @@ impl Handler {
                             "allow_ping" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref pingable) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_pingable(list, *pingable).unwrap();
                                     embed.field("allow ping", format!("{}", pingable), false);
@@ -1261,7 +1265,7 @@ impl Handler {
                             "mentioning" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     embed.field(
@@ -1275,7 +1279,7 @@ impl Handler {
                             "proposing" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref propose_perm) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     embed.field(
@@ -1289,7 +1293,7 @@ impl Handler {
                             "visible_commands" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref visible_commands) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_channel_public_visible(channel, *visible_commands)
                                         .unwrap();
@@ -1312,7 +1316,7 @@ impl Handler {
                             "enabled" => {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref prop_enabled) =
-                                    *resolved_value
+                                *resolved_value
                                 {
                                     x.set_propose_enabled(guild_id, *prop_enabled).unwrap();
                                     embed.field(
@@ -1338,6 +1342,32 @@ impl Handler {
                                     embed.field("proposal threshold", format!("{}", value), false);
                                 }
                             }
+                            _ => (),
+                        }
+                    }
+                }
+                CommandDataOption {
+                    ref name, options, ..
+                } if name == "log" => {
+                    embed
+                        .color((255, 0, 0))
+                        .description("Configuring logging settings");
+                    for setting in options {
+                        match setting.name.as_str() {
+                            "set_channel" => {
+                                let temp = setting.resolved.as_ref().unwrap();
+                                if let CommandDataOptionValue::Channel(ref b) = *temp {
+                                    
+                                    x.set_log_channel(guild_id, Some(b.id)).unwrap();
+                                    embed.field(
+                                        "log channel",
+                                        format!("log channel set to {}", b.name.as_ref().unwrap()),
+                                        false,
+                                    );
+                                } else {
+                                    panic!("The parameter log_channel for configure log is incorrectly configured");
+                                }
+                            },
                             _ => (),
                         }
                     }
@@ -1488,12 +1518,7 @@ impl Handler {
 
     async fn handle_cancel_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
-            Handler::send_text(
-                String::from("You do not have permission to use this command."),
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
         let guild_id = command.guild_id.unwrap();
@@ -1520,6 +1545,7 @@ impl Handler {
             let vote_threshold = x.get_vote_threshold(guild_id).unwrap();
             if votes >= vote_threshold {
                 println!("vote succesful");
+                // x.get_proposals()
             }
         }
     }
@@ -1708,6 +1734,117 @@ impl Handler {
             .await
             .unwrap();
     }
+
+    async fn handle_log_purge(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        if !Handler::can_manage_messages(&command) {
+            return
+        }
+        
+        let mut ref_user: Option<&User> = None;
+        for field in &command.data.options {
+            if field.kind == CommandOptionType::User {
+                let resolved_value = field.resolved.as_ref().unwrap();
+                if let CommandDataOptionValue::User(ref target, _) = resolved_value {
+                    ref_user = Some(target);
+                };
+            }
+        }
+
+        
+        let mut messages = command.channel_id.messages(&ctx.http, |x| x.limit(25)).await.unwrap();
+        // serenity::builder::GetMessages;
+        messages.reverse();
+
+
+        let mut select_menu_options: Vec<CreateSelectMenuOption> = Vec::new();
+        for message in messages {
+            let label = match message.content.len() {
+                0 => "Empty",
+                1..=90 => message.content.as_str(),
+                _ => &message.content[0..30]
+            };
+            select_menu_options.push(CreateSelectMenuOption::new(label, message.id));
+        }
+        let mut select_menu = CreateSelectMenu::default();
+        select_menu
+            .placeholder("Select multiple messages")
+            .max_values(min(25, select_menu_options.len() as u64))
+            .options(|options| options.set_options(select_menu_options));
+        
+        if let Some(user) = ref_user {
+            select_menu.custom_id(format!("{}#{} - {}", user.name, user.discriminator, user.id));
+        } else {
+            select_menu.custom_id("-");
+        }
+
+        let mut action_row = CreateActionRow::default();
+        action_row.add_select_menu(select_menu);
+
+        command.create_interaction_response(&ctx.http, |response| {
+            response.kind(InteractionResponseType::ChannelMessageWithSource)
+            .interaction_response_data(|message| {
+                message.ephemeral(true).components(|c| c.add_action_row(action_row))
+            })
+        }).await.unwrap();
+
+
+    }
+
+    async fn process_log_purge(
+        &self,
+        component: &MessageComponentInteraction,
+        ctx: &Context,
+    ) {
+        let member = component.member.as_ref().unwrap();
+        if !member.permissions.unwrap().contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES) {
+            component.defer(&ctx.http).await.unwrap();
+            return
+        }
+
+        let guild_id = component.guild_id.unwrap();
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let res_cid: ChannelId;
+        if let Ok(x) = db.clone().lock() {
+            let so = x.get_log_channel(guild_id).unwrap();
+            res_cid = match so {
+                Some(cid) => cid,
+                None => {
+                    return
+                },
+            }
+        } else {
+            return
+        }
+
+        let ids = &component.data.values.iter().map(|a| MessageId::from(a.parse::<u64>().unwrap())).collect::<Vec<MessageId>>();
+        
+        let mut messages = component.channel_id.messages(&ctx.http, |x| x.limit(30)).await.unwrap();
+        messages.reverse();
+
+
+        let mut embed = CreateEmbed::default();
+        embed.title(format!("Delete log: {}", component.data.custom_id));
+        for message in messages.into_iter().filter(|a| ids.contains(&a.id)) {
+            embed.field(message.author.name, message.content, false);
+        }
+
+        component.channel_id.delete_messages(&ctx.http, ids).await.unwrap(); //TODO: check bot permission for this
+
+        res_cid.send_message(&ctx.http, |response| {
+                        response.set_embed(embed) 
+                    }).await.unwrap();
+        component.defer(&ctx.http).await.unwrap();
+        // component.create_interaction_response(&ctx.http, |response| {
+        //     response
+        //         .kind(InteractionResponseType::ChannelMessageWithSource)
+        //         .interaction_response_data(|message| {
+        //             message.add_embed(embed)
+        //         })
+        // }).await.unwrap();
+    }
+
+
 }
 
 #[async_trait]
@@ -1732,6 +1869,7 @@ impl EventHandler for Handler {
                 "remove_alias" => self.handle_remove_alias(&command, &ctx).await,
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
+                "log_purge" => self.handle_log_purge(&command, &ctx).await,
                 _ => self.handle_invalid(&command).await,
             };
         } else if let Interaction::Autocomplete(completable) = interaction {
@@ -1758,7 +1896,8 @@ impl EventHandler for Handler {
             {
                 "list" => self.list_page_from_component(&component, &ctx).await,
                 "propose" => self.propose_vote_from_component(&component, &ctx).await,
-                _ => (),
+                "log_purge" => self.process_log_purge(&component, &ctx).await,
+                _ => println!("{:?}", &component),
             }
         } else if let Interaction::ModalSubmit(modal) = interaction {
             modal
@@ -1852,14 +1991,15 @@ impl EventHandler for Handler {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
             if let Ok(mut x) = db.clone().lock() {
-                for guild in ready.guilds {
+                for guild in &ready.guilds {
                     x.add_guild(guild.id).ok();
                 }
             }
         }
 
-        //TODO: move to DB loop.
-        add_all_application_commands(&mut GuildId(466163515103641611), ctx).await;
+        for mut guild in ready.guilds {
+            add_all_application_commands(&mut guild.id, &ctx).await;
+        }
     }
 }
 

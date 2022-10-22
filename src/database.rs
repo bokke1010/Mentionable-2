@@ -27,7 +27,8 @@ pub mod data_access {
                 pingcooldown        INTEGER DEFAULT 1800 CHECK( pingcooldown > 0 ), \
                 general_propose     INTEGER DEFAULT 1 CHECK( general_propose = 0 OR general_propose = 1 ), \
                 propose_threshold   INTEGER DEFAULT 8 CHECK( propose_threshold > 0 ), \
-                propose_timeout     INTEGER DEFAULT 86400 CHECK( propose_timeout > 2 ));\n\
+                propose_timeout     INTEGER DEFAULT 86400 CHECK( propose_timeout > 2 ), \
+                log_channel         INTEGER DEFAULT -1 );\n\
             CREATE TABLE IF NOT EXISTS alias ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 list_id             INTEGER REFERENCES lists(id), \
@@ -1022,6 +1023,39 @@ pub mod data_access {
                 conditions.push((cond, row.get::<usize, bool>(2)?, row.get::<usize, u64>(3)?));
             }
             Ok(conditions)
+        }
+        //ANCHOR: log purge functions
+
+        pub fn set_log_channel(
+            &mut self,
+            guild_id: GuildId,
+            channel_id: Option<ChannelId>,
+        ) -> Result<(), Error> {
+            if let Some(cid) = channel_id {
+                self.db.execute(
+                    "UPDATE guilds SET log_channel = ?1 WHERE id = ?2",
+                    params![cid.as_u64(), guild_id.as_u64()],
+                )?;
+            } else {
+                self.db.execute(
+                    "UPDATE guilds SET log_channel = -1 WHERE id = ?2",
+                    params![guild_id.as_u64()],
+                )?;
+            }
+            Ok(())
+        }
+
+        pub fn get_log_channel(&self, guild_id: GuildId) -> Result<Option<ChannelId>, Error> {
+            let cid = self.db.query_row(
+                "SELECT log_channel FROM guilds WHERE id = ?1",
+                params![guild_id.as_u64()],
+                |row| Ok(row.get::<usize, i64>(0)?),
+            );
+            match cid {
+                Ok(-1) => Ok(None),
+                Ok(a) => Ok(Some(ChannelId::from(a as u64))),
+                Err(a) => Err(a),
+            }
         }
     }
 }

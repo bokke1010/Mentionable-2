@@ -9,7 +9,7 @@ pub mod guild_commands {
         prelude::*,
     };
 
-    pub async fn add_all_application_commands(gid: &mut GuildId, ctx: Context) -> Vec<Command> {
+    pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> Vec<Command> {
         let can_manage_messages = permissions::Permissions::MANAGE_MESSAGES;
         match gid.set_application_commands(&ctx.http, |commands| {
             commands
@@ -67,6 +67,7 @@ pub mod guild_commands {
                     command
                         .name("create")
                         .description("Adds a list")
+                        .default_member_permissions(can_manage_messages)
                         .create_option(|option| {
                             option
                                 .name("name")
@@ -219,7 +220,8 @@ pub mod guild_commands {
                                 .kind(CommandOptionType::String)
                                 .required(true)
                         })
-                })                .create_application_command(|command| {
+                })
+                .create_application_command(|command| {
                     command
                         .name("list_proposals")
                         .description("See proposed lists")
@@ -356,6 +358,19 @@ pub mod guild_commands {
                                 .kind(CommandOptionType::String)
                                 .required(true)
                                 .set_autocomplete(true)
+                        })
+                })
+                .create_application_command(|command| { // mod only
+                    command
+                        .name("log_purge")
+                        .description("Log and purge a complicated sequence of messages")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|option| {
+                            option
+                                .name("member")
+                                .description("The user & id to add to this log")
+                                .kind(CommandOptionType::User)
+                                .required(false)
                         })
                 })
                 .create_application_command(|command| { // mod only
@@ -578,6 +593,17 @@ pub mod guild_commands {
                                     .description("Set the amount of votes required to accept a proposal")
                                     .kind(CommandOptionType::Integer)
                                     .required(false)
+                            })
+                        })
+                        .create_option(|catagory| {
+                            catagory.name("log").description("Settings that affect logging")
+                            .kind(CommandOptionType::SubCommand)
+                            .create_sub_option(|option| {
+                                option
+                                    .name("set_channel")
+                                    .description("The channel to send logs to.")
+                                    .kind(CommandOptionType::Channel)
+                                    .required(true)
                             })
                         })
                 })

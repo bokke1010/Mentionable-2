@@ -1,6 +1,6 @@
 pub mod structures {
 
-    use serenity::model::id::{ChannelId, GuildId, RoleId};
+    use serenity::model::id::{GuildId, RoleId};
     use std::cmp::max;
     use std::fmt;
 
