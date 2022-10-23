@@ -23,6 +23,7 @@ use serenity::{
     },
     prelude::*,
 };
+
 use std::{
     cmp::min,
     collections::BTreeSet,
@@ -31,12 +32,14 @@ use std::{
 };
 
 mod structures;
-use structures::structures::{ListId, LOGCONDITION, LOGTRIGGER, PERMISSION};
+use structures::{ListId, LOGCONDITION, LOGTRIGGER, PERMISSION};
 
 mod guild_commands;
-use crate::guild_commands::guild_commands::add_all_application_commands;
+
 mod database;
-use database::data_access::Database;
+use database::Database;
+
+mod pickle_import;
 
 struct DB;
 struct BotData {
@@ -519,7 +522,7 @@ impl Handler {
             match x.get_list_id_by_name(list_name, guild_id) {
                 Ok(_) => content = "This list already exists.".to_string(),
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    x.add_list(guild_id, &list_name.to_string(), "".to_string())
+                    x.add_list(guild_id, &list_name.to_string(), "")
                         .expect("list creation failed");
                     content += "Created list.";
                     ()
@@ -820,7 +823,7 @@ impl Handler {
         const PAGESIZE: usize = 20;
         let succes: bool;
         let mut maxlists: usize = 0;
-        let lists: Vec<structures::structures::PingList>;
+        let lists: Vec<structures::PingList>;
         let mut labels: Vec<String> = Vec::new();
         let mut page_selection: (usize, usize) = (0, 0);
         let page_count: usize;
@@ -1076,7 +1079,7 @@ impl Handler {
                                     resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
-                                    x.set_role_propose(guild_id, role, perm).unwrap();
+                                    x.set_role_canpropose(guild_id, role, perm).unwrap();
                                     embed.field(
                                         "disable propose",
                                         format!("Proposal permission: {}", perm),
@@ -1101,7 +1104,7 @@ impl Handler {
                             "exclude_from_cooldown" => {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_role_cooldown(guild_id, role, *b).unwrap();
+                                    x.set_role_ignore_cooldown(guild_id, role, *b).unwrap();
                                     embed.field("role cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
@@ -1320,7 +1323,7 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref prop_enabled) =
                                     *resolved_value
                                 {
-                                    x.set_propose_enabled(guild_id, *prop_enabled).unwrap();
+                                    x.set_guild_canpropose(guild_id, *prop_enabled).unwrap();
                                     embed.field(
                                         "enable proposals",
                                         format!("{}", prop_enabled),
@@ -1462,9 +1465,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x
-                    .start_proposal(guild_id, &name, "".to_string(), timestamp)
-                    .unwrap();
+                proposal_id = x.start_proposal(guild_id, &name, "", timestamp).unwrap();
             }
         } else {
             return;
@@ -2023,38 +2024,56 @@ impl EventHandler for Handler {
         }
 
         for mut guild in ready.guilds {
-            add_all_application_commands(&mut guild.id, &ctx).await;
+            guild_commands::add_all_application_commands(&mut guild.id, &ctx).await;
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
+    enum ParseType {
+        SCANNING,
+        IMPORT,
+    }
+    #[derive(std::cmp::PartialEq)]
+    enum ProgramTarget {
+        RUN,
+        IMPORT,
+    }
+    let args = env::args();
+    let mut parse_type = ParseType::SCANNING;
+    let mut program_target = ProgramTarget::RUN;
+    for (i, arg) in args.enumerate() {
+        match parse_type {
+            ParseType::SCANNING => {
+                parse_type = match arg.as_str() {
+                    "--import" => ParseType::IMPORT,
+                    _ => ParseType::SCANNING,
+                }
+            }
+            ParseType::IMPORT => {
+                let mut db = Database::new("database.db").unwrap();
+                let filename = arg.split("/").collect::<Vec<&str>>();
+                let filename = filename.last().unwrap();
+                let filename = filename.split(".").next().unwrap();
+                let gid = filename.parse::<u64>().unwrap();
+                println!("guild id is {}", gid);
+                pickle_import::import_pickled(&arg, GuildId::from(gid), &mut db);
+                program_target = ProgramTarget::IMPORT;
+                parse_type = ParseType::SCANNING;
+            }
+        }
+    }
+
+    if program_target != ProgramTarget::RUN {
+        return;
+    }
+
     // Load database
-    let database: Database =
-        Database::new("database.db".to_string()).expect("Database could not be loaded");
+    let database: Database = Database::new("database.db").expect("Database could not be loaded");
     let database = Mutex::new(database);
 
-    // let args = env::args();
-    // let mut wait_type = 0;
-    // for (i, arg) in args.enumerate() {
-    //     match wait_type {
-    //         0 => {
-    //             wait_type = match arg.as_str() {
-    //                 "--import" => 1,
-    //                 _ => 0,
-    //             }
-    //         },
-    //         1 => {
-    //             // database::data_access::new("base");
-    //             wait_type = 0;
-    //         },
-    //         _ => wait_type = 0,
-    //     }
-    // }
-
     // Configure the client with your Discord bot token in the environment.
-    // dotenv::dotenv().expect("Failed to load .env file");
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     // The Application Id is usually the Bot User Id.

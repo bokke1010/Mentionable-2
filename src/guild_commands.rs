@@ -1,17 +1,15 @@
-pub mod guild_commands {
+use serenity::{
+    model::{
+        application::command::{Command, CommandOptionType, CommandType},
+        id::GuildId,
+        permissions,
+    },
+    prelude::*,
+};
 
-    use serenity::{
-        model::{
-            application::command::{Command, CommandOptionType, CommandType},
-            id::GuildId,
-            permissions,
-        },
-        prelude::*,
-    };
-
-    pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> Vec<Command> {
-        let can_manage_messages = permissions::Permissions::MANAGE_MESSAGES;
-        match gid.set_application_commands(&ctx.http, |commands| {
+pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> Vec<Command> {
+    let can_manage_messages = permissions::Permissions::MANAGE_MESSAGES;
+    match gid.set_application_commands(&ctx.http, |commands| {
             commands
                 .create_application_command(|command| { //ANCHOR ping command
                     command
@@ -612,5 +610,4 @@ pub mod guild_commands {
             Ok(result) => result,
             Err(error) => panic!("Problem assembling commands: {:?}", error),
         }
-    }
 }
