@@ -64,7 +64,6 @@ pub enum LOGTRIGGER {
     RoleAdd(RoleId),
     RoleRemove(RoleId),
     JoinServer(),
-    LeaveServer(),
 }
 
 impl LOGTRIGGER {
@@ -73,7 +72,6 @@ impl LOGTRIGGER {
             LOGTRIGGER::RoleAdd(_) => 0,
             LOGTRIGGER::RoleRemove(_) => 1,
             LOGTRIGGER::JoinServer() => 2,
-            LOGTRIGGER::LeaveServer() => 3,
         }
     }
 }

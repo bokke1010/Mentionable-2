@@ -856,30 +856,7 @@ impl Database {
                         ],
                     )?;
             }
-            LOGTRIGGER::LeaveServer() => {
-                self.db.execute(
-                        "INSERT INTO action_response (guild_id, trigger, response_channel, response_message) VALUES (?1, ?2, ?3, ?4)",
-                        params![
-                            guild_id.as_u64(),
-                            log_type.toint(),
-                            response_channel.as_u64(),
-                            response_message
-                        ],
-                    )?;
-            }
-            LOGTRIGGER::RoleAdd(role_id) => {
-                self.db.execute(
-                        "INSERT INTO action_response (guild_id, trigger, trigger_id, response_channel, response_message) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![
-                            guild_id.as_u64(),
-                            log_type.toint(),
-                            role_id.as_u64(),
-                            response_channel.as_u64(),
-                            response_message
-                        ],
-                    )?;
-            }
-            LOGTRIGGER::RoleRemove(role_id) => {
+            LOGTRIGGER::RoleAdd(role_id) | LOGTRIGGER::RoleRemove(role_id) => {
                 self.db.execute(
                         "INSERT INTO action_response (guild_id, trigger, trigger_id, response_channel, response_message) VALUES (?1, ?2, ?3, ?4, ?5)",
                         params![
@@ -914,7 +891,7 @@ impl Database {
                         Result::Err(er) => Err(er)
                     }
                 },
-                LOGTRIGGER::JoinServer() | LOGTRIGGER::LeaveServer() => {
+                LOGTRIGGER::JoinServer() => {
                     match self.db
                     .query_row(
                         "SELECT id FROM action_response WHERE guild_id = ?1 AND trigger = ?2",

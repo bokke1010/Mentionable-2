@@ -1656,7 +1656,8 @@ impl Handler {
         guild_id: GuildId,
         member: &Member,
         triggers: Vec<LOGTRIGGER>,
-    ) {
+    ) -> Vec<(ChannelId, String)> {
+        let mut responses: Vec<(ChannelId, String)> = vec![];
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
@@ -1672,19 +1673,11 @@ impl Handler {
                         }
                     }
                     let (channel_id, msg) = x.get_response(guild_id, id).unwrap();
-                    // self.execute_trigger(trigger).await;
+                    responses.push((channel_id, msg));
                 }
             }
         }
-    }
-
-    async fn execute_trigger(&self, trigger: LOGTRIGGER) {
-        match trigger {
-            LOGTRIGGER::JoinServer() => (),
-            LOGTRIGGER::LeaveServer() => (),
-            LOGTRIGGER::RoleAdd(role_id) => (),
-            LOGTRIGGER::RoleRemove(role_id) => (),
-        }
+        responses
     }
 
     async fn handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -1963,26 +1956,40 @@ impl EventHandler for Handler {
             let oldset = BTreeSet::from_iter(old.roles);
             let newset = BTreeSet::from_iter(new.roles.iter().cloned());
 
-            self.check_triggers(
-                &ctx,
-                new.guild_id,
-                &new,
-                oldset
-                    .difference(&newset)
-                    .map(|id| LOGTRIGGER::RoleRemove(*id))
-                    .collect(),
-            )
-            .await;
-            self.check_triggers(
-                &ctx,
-                new.guild_id,
-                &new,
-                newset
-                    .difference(&oldset)
-                    .map(|id| LOGTRIGGER::RoleAdd(*id))
-                    .collect(),
-            )
-            .await;
+            let mut responses: Vec<(ChannelId, String)> = vec![];
+            responses.extend(
+                self.check_triggers(
+                    &ctx,
+                    new.guild_id,
+                    &new,
+                    oldset
+                        .difference(&newset)
+                        .map(|id| LOGTRIGGER::RoleRemove(*id))
+                        .collect(),
+                )
+                .await,
+            );
+            responses.extend(
+                self.check_triggers(
+                    &ctx,
+                    new.guild_id,
+                    &new,
+                    newset
+                        .difference(&oldset)
+                        .map(|id| LOGTRIGGER::RoleAdd(*id))
+                        .collect(),
+                )
+                .await,
+            );
+            for (channel, message_str) in responses {
+                let message_str = message_str
+                    .replace("{userID}", format!("{}", new.user.id).as_str())
+                    .replace("{name}", new.user.name.as_str());
+                channel
+                    .send_message(&ctx.http, |message| message.content(message_str))
+                    .await
+                    .unwrap();
+            }
         } else {
             println!(
                 "could not resolve old roles of member with id {}",
@@ -1991,29 +1998,24 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn guild_member_removal(
-        &self,
-        ctx: Context,
-        guild_id: GuildId,
-        _user: User,
-        _member_data_if_available: Option<Member>,
-    ) {
-        if let Some(member) = _member_data_if_available {
-            self.check_triggers(&ctx, guild_id, &member, vec![LOGTRIGGER::LeaveServer()])
-                .await;
-        } else {
-            println!("Member data of former member {} not found", _user.name);
-        }
-    }
-
     async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
-        self.check_triggers(
-            &ctx,
-            new_member.guild_id,
-            &new_member,
-            vec![LOGTRIGGER::JoinServer()],
-        )
-        .await;
+        for (channel, message_str) in self
+            .check_triggers(
+                &ctx,
+                new_member.guild_id,
+                &new_member,
+                vec![LOGTRIGGER::JoinServer()],
+            )
+            .await
+        {
+            let message_str = message_str
+                .replace("{userID}", format!("{}", new_member.user.id).as_str())
+                .replace("{name}", new_member.user.name.as_str());
+            channel
+                .send_message(&ctx.http, |message| message.content(message_str))
+                .await
+                .unwrap();
+        }
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
