@@ -1,8 +1,7 @@
-use serde::Deserialize;
+use core::panic;
 use serde_pickle as pickle;
 use serde_pickle::value::{HashableValue, Value};
-use serenity::model::id::{ChannelId, GuildId, MessageId, RoleId, UserId};
-use std::collections::BTreeMap;
+use serenity::model::id::{ChannelId, GuildId, RoleId, UserId};
 use std::fs::File;
 
 use crate::{database::Database, LOGCONDITION, LOGTRIGGER, PERMISSION};
@@ -80,7 +79,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
     // FrozenSet(fset) => (),
     // Dict(pairslist) => (),
 
-    fn db_parse_roleLogSingle(
+    fn db_parse_role_log_single(
         db: &mut Database,
         guild_id: GuildId,
         trigger: LOGTRIGGER,
@@ -124,11 +123,11 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         }
     }
 
-    fn db_parse_roleLogAdd(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+    fn db_parse_role_log_add(db: &mut Database, guild_id: GuildId, content_val: &Value) {
         if let Value::Dict(outer_dict) = content_val {
             for (role_id_val, info_val) in outer_dict {
                 match (role_id_val, info_val) {
-                    (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_roleLogSingle(
+                    (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_role_log_single(
                         db,
                         guild_id,
                         LOGTRIGGER::RoleAdd(RoleId(*role_id as u64)),
@@ -142,11 +141,11 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         }
     }
 
-    fn db_parse_roleLogRemove(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+    fn db_parse_role_log_remove(db: &mut Database, guild_id: GuildId, content_val: &Value) {
         if let Value::Dict(outer_dict) = content_val {
             for (role_id_val, info_val) in outer_dict {
                 match (role_id_val, info_val) {
-                    (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_roleLogSingle(
+                    (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_role_log_single(
                         db,
                         guild_id,
                         LOGTRIGGER::RoleRemove(RoleId(*role_id as u64)),
@@ -177,7 +176,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
     }
 
     fn db_parse_restrictping(db: &mut Database, guild_id: GuildId, content_val: &Value) {
-        db.set_guild_canping(guild_id, false);
+        db.set_guild_canping(guild_id, false).unwrap();
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
@@ -194,7 +193,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
     }
 
     fn db_parse_restrictproposal(db: &mut Database, guild_id: GuildId, content_val: &Value) {
-        db.set_guild_canpropose(guild_id, false);
+        db.set_guild_canpropose(guild_id, false).unwrap();
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
@@ -209,7 +208,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         }
     }
 
-    fn db_parse_channelrestrictions(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+    fn db_parse_channelrestrictions(db: &mut Database, _guild_id: GuildId, content_val: &Value) {
         if let Value::Dict(tags) = content_val {
             for (key_val, set_val) in tags {
                 if let HashableValue::String(key) = key_val {
@@ -253,30 +252,115 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         }
     }
 
-    database.add_guild(gid);
+    fn db_parse_pingdelay(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+        if let Value::F64(pingcooldown) = content_val {
+            db.set_guild_general_cooldown(guild_id, (*pingcooldown) as u64)
+                .unwrap();
+        } else {
+            panic!("err");
+        }
+    }
 
-    let (data, lists): (
-        &BTreeMap<HashableValue, Value>,
-        &BTreeMap<HashableValue, Value>,
-    );
+    fn db_parse_proposals(_db: &mut Database, _guild_id: GuildId, _content_val: &Value) {
+        println!(
+            "Due to differences in how proposals are handled and managed, those cannot be parsed."
+        );
+    }
+
+    fn db_parse_proposal_timeout(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+        if let Value::I64(timeout) = content_val {
+            db.set_propose_timeout(guild_id, *timeout as u64).unwrap();
+        } else {
+            panic!("err");
+        }
+    }
+
+    fn db_parse_proposal_threshold(db: &mut Database, guild_id: GuildId, content_val: &Value) {
+        if let Value::I64(threshold) = content_val {
+            db.set_propose_threshold(guild_id, *threshold as u64)
+                .unwrap();
+        } else {
+            panic!("err");
+        }
+    }
+
+    /*
+     * restricted (bool)
+     * noping (bool)
+     * pingdelay (float)
+     * description (string)
+     */
+    fn db_parse_list(
+        db: &mut Database,
+        guild_id: GuildId,
+        list_name: &str,
+        content_val: &Vec<Value>,
+    ) {
+        println!("{}: {:?}", list_name, content_val[0]);
+        match &content_val[..] {
+            [Value::Dict(role_data), Value::Set(members)] => {
+                let list_id = db.add_list(guild_id, list_name).unwrap();
+                let mut noping = false;
+                let mut nojoin = false;
+                for (key_val, item_val) in role_data {
+                    if let HashableValue::String(key) = key_val {
+                        match (key.as_str(), item_val) {
+                            ("restricted", Value::Bool(b)) => {
+                                nojoin = *b;
+                            }
+                            ("noping", Value::Bool(b)) => {
+                                noping = *b;
+                            }
+                            ("pingdelay", Value::I64(i)) => db.set_cooldown(list_id, *i).unwrap(),
+                            ("description", Value::String(s)) => {
+                                db.set_description(list_id, &s).unwrap()
+                            }
+                            _ => panic!("err"),
+                        }
+                    } else {
+                        panic!("err");
+                    }
+                }
+                if noping {
+                    db.set_joinable(list_id, PERMISSION::DENY).unwrap();
+                }
+                if nojoin {
+                    db.set_pingable(list_id, PERMISSION::DENY).unwrap();
+                }
+                for member_val in members {
+                    if let HashableValue::I64(member_id) = member_val {
+                        db.add_member(UserId(*member_id as u64), list_id).unwrap();
+                    } else {
+                        panic!("err");
+                    }
+                }
+            }
+            _ => panic!("err"),
+        }
+    }
+
+    database.add_guild(gid).unwrap();
+
     if let Value::Tuple(base) = deserialized {
         if let [dval, lval] = &base[..] {
             if let Value::Dict(dres) = dval {
                 for (dkey, dvalue) in dres.into_iter() {
                     if let HashableValue::String(key) = dkey {
                         match key.as_str() {
-                            "roleLogAdd" => db_parse_roleLogAdd(database, gid, dvalue),
-                            "roleLogRemove" => db_parse_roleLogRemove(database, gid, dvalue),
+                            "roleLogAdd" => db_parse_role_log_add(database, gid, dvalue),
+                            "roleLogRemove" => db_parse_role_log_remove(database, gid, dvalue),
                             "fastping" => db_parse_fastping(database, gid, dvalue),
                             "restrictping" => db_parse_restrictping(database, gid, dvalue),
                             "restrictproposal" => db_parse_restrictproposal(database, gid, dvalue),
                             "channelRestrictions" => {
                                 db_parse_channelrestrictions(database, gid, dvalue)
                             }
-                            "pingdelay" => println!("found pingdelay {:?}", dvalue),
-                            "proposals" => println!("found proposals {:?}", dvalue),
-                            "proposalTimeout" => println!("found proposalTimeout {:?}", dvalue),
-                            "proposalThreshold" => println!("found proposalThreshold {:?}", dvalue),
+                            "pingdelay" => db_parse_pingdelay(database, gid, dvalue),
+                            "proposals" => db_parse_proposals(database, gid, dvalue),
+                            "proposalTimeout" => db_parse_proposal_timeout(database, gid, dvalue),
+                            "proposalThreshold" => {
+                                db_parse_proposal_threshold(database, gid, dvalue)
+                            }
                             _ => println!("Unmatched key {}", dkey),
                         }
                     }
@@ -284,8 +368,11 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
             }
             if let Value::Dict(lres) = lval {
                 for (dkey, dvalue) in lres.into_iter() {
-                    if let HashableValue::String(s) = dkey {
-                        // println!("found list {} with val {:?}", s, dvalue);
+                    match (dkey, dvalue) {
+                        (HashableValue::String(key), Value::Tuple(value)) => {
+                            db_parse_list(database, gid, key, value)
+                        }
+                        _ => panic!("err"),
                     }
                 }
             }

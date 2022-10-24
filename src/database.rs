@@ -21,9 +21,9 @@ impl Database {
         let statement = "PRAGMA foreign_keys = ON;\n\
             CREATE TABLE IF NOT EXISTS guilds ( \
                 id                  INTEGER PRIMARY KEY NOT NULL, \
-                general_cooldown    INTEGER DEFAULT 0 CHECK( general_cooldown = 0 OR general_cooldown = 1 ), \
                 general_canping     INTEGER DEFAULT 1 CHECK( general_canping = 0 OR general_canping = 1 ) , \
-                pingcooldown        INTEGER DEFAULT 1800 CHECK( pingcooldown > 0 ), \
+                general_cooldown    INTEGER DEFAULT 0 CHECK( general_cooldown >= 0 ), \
+                pingcooldown        INTEGER DEFAULT 1800 CHECK( pingcooldown >= 0 ), \
                 general_propose     INTEGER DEFAULT 1 CHECK( general_propose = 0 OR general_propose = 1 ), \
                 propose_threshold   INTEGER DEFAULT 8 CHECK( propose_threshold > 0 ), \
                 propose_timeout     INTEGER DEFAULT 86400 CHECK( propose_timeout > 2 ), \
@@ -106,14 +106,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (bool, bool, u64) {
+    pub fn get_guild_ping_data(&self, guild_id: GuildId) -> (u64, bool, u64) {
         self.db
             .query_row(
                 "SELECT general_cooldown, general_canping, pingcooldown FROM guilds WHERE id=?1",
                 params![guild_id.as_u64()],
                 |row| {
                     Ok((
-                        row.get::<usize, bool>(0)?,
+                        row.get::<usize, u64>(0)?,
                         row.get::<usize, bool>(1)?,
                         row.get::<usize, u64>(2)?,
                     ))
@@ -151,34 +151,29 @@ impl Database {
     }
 
     //ANCHOR List functions
-    pub fn add_list(
-        &mut self,
-        guild_id: GuildId,
-        name: &String,
-        description: &str,
-    ) -> Result<ListId, Error> {
+    pub fn add_list(&mut self, guild_id: GuildId, name: &str) -> Result<ListId, Error> {
         self.db.execute(
-            "INSERT INTO lists (guild_id, description) VALUES (?1, ?2)",
-            params![guild_id.as_u64(), description],
+            "INSERT INTO lists (guild_id) VALUES (?1)",
+            params![guild_id.as_u64()],
         )?;
         let list_id = self.db.last_insert_rowid() as u64;
-        self.add_alias(list_id, name.as_str())?;
+        self.add_alias(list_id, name)?;
         Ok(list_id)
     }
 
     //List config
-    pub fn set_pingable(&mut self, list_id: ListId, pingable: bool) -> Result<(), Error> {
+    pub fn set_pingable(&mut self, list_id: ListId, pingable: PERMISSION) -> Result<(), Error> {
         self.db.execute(
             "UPDATE lists SET ping_permission = ?1 WHERE id = ?2",
-            params![pingable, list_id],
+            params![pingable as u64, list_id],
         )?;
         Ok(())
     }
 
-    pub fn set_joinable(&mut self, list_id: ListId, joinable: bool) -> Result<(), Error> {
+    pub fn set_joinable(&mut self, list_id: ListId, joinable: PERMISSION) -> Result<(), Error> {
         self.db.execute(
             "UPDATE lists SET join_permission = ?1 WHERE id = ?2",
-            params![joinable, list_id],
+            params![joinable as u64, list_id],
         )?;
         Ok(())
     }
@@ -191,7 +186,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn set_description(&mut self, list_id: ListId, value: &String) -> Result<(), Error> {
+    pub fn set_description(&mut self, list_id: ListId, value: &str) -> Result<(), Error> {
         self.db.execute(
             "UPDATE lists SET description = ?1 WHERE id = ?2",
             params![value, list_id],
@@ -731,13 +726,12 @@ impl Database {
         &mut self,
         guild_id: GuildId,
         name: &String,
-        description: &str,
         timestamp: i64,
     ) -> Result<ListId, Error> {
         // let transaction = self.db.transaction().unwrap();
-        let list_id = self.add_list(guild_id, name, description).unwrap();
-        self.set_pingable(list_id, false).unwrap();
-        self.set_joinable(list_id, false).unwrap();
+        let list_id = self.add_list(guild_id, name).unwrap();
+        self.set_pingable(list_id, PERMISSION::DENY).unwrap();
+        self.set_joinable(list_id, PERMISSION::DENY).unwrap();
         self.set_visible(list_id, false).unwrap();
         self.db.execute(
             "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",

@@ -162,7 +162,7 @@ impl Handler {
 
             let last_global = global.entry(guild_id).or_insert(0);
 
-            if general_cooldown && !ignore_cooldown && *last_global + pingcooldown >= timestamp {
+            if !ignore_cooldown && *last_global + general_cooldown >= timestamp {
                 invalid_lists.push(("all".to_string(), ListInvalidReasons::OnGlobalCooldown));
             }
 
@@ -522,7 +522,7 @@ impl Handler {
             match x.get_list_id_by_name(list_name, guild_id) {
                 Ok(_) => content = "This list already exists.".to_string(),
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    x.add_list(guild_id, &list_name.to_string(), "")
+                    x.add_list(guild_id, &list_name.to_string())
                         .expect("list creation failed");
                     content += "Created list.";
                     ()
@@ -1226,7 +1226,15 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref joinable) =
                                     *resolved_value
                                 {
-                                    x.set_joinable(list, *joinable).unwrap();
+                                    x.set_joinable(
+                                        list,
+                                        if *joinable {
+                                            PERMISSION::NEUTRAL
+                                        } else {
+                                            PERMISSION::DENY
+                                        },
+                                    )
+                                    .unwrap();
                                     embed.field("set joinable", format!("{}", joinable), false);
                                 } else {
                                     panic!("The parameter allow_join for configure list is incorrectly configured");
@@ -1237,7 +1245,15 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref pingable) =
                                     *resolved_value
                                 {
-                                    x.set_pingable(list, *pingable).unwrap();
+                                    x.set_pingable(
+                                        list,
+                                        if *pingable {
+                                            PERMISSION::NEUTRAL
+                                        } else {
+                                            PERMISSION::DENY
+                                        },
+                                    )
+                                    .unwrap();
                                     embed.field("allow ping", format!("{}", pingable), false);
                                 } else {
                                     panic!("The parameter allow_ping for configure list is incorrectly configured");
@@ -1465,7 +1481,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, &name, "", timestamp).unwrap();
+                proposal_id = x.start_proposal(guild_id, &name, timestamp).unwrap();
             }
         } else {
             return;
@@ -2043,7 +2059,7 @@ async fn main() {
     let args = env::args();
     let mut parse_type = ParseType::SCANNING;
     let mut program_target = ProgramTarget::RUN;
-    for (i, arg) in args.enumerate() {
+    for arg in args {
         match parse_type {
             ParseType::SCANNING => {
                 parse_type = match arg.as_str() {
