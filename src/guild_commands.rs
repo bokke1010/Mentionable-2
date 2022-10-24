@@ -373,6 +373,422 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                 })
                 .create_application_command(|command| { // mod only
                     command
+                        .name("list_auto_responses")
+                        .description("Show all current automatic responses.")
+                        .default_member_permissions(can_manage_messages)
+                })
+                .create_application_command(|command| { // mod only
+                    command
+                        .name("add_auto_response")
+                        .description("Add a automatic response")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_add")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_remove")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("join_server")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                })
+                .create_application_command(|command| { // mod only
+                    command
+                        .name("remove_auto_response")
+                        .description("Remove a automatic response")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_add")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_remove")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("join_server")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("message")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                })
+                        })
+                })
+                .create_application_command(|command| { // mod only
+                    command
+                        .name("add_auto_response_condition")
+                        .description("Add a automatic response condition")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_add")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_remove")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("join_server")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                })
+                .create_application_command(|command| { // mod only
+                    command
+                        .name("remove_auto_response_condition")
+                        .description("Remove a automatic response condition")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_add")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("role_remove")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                        .create_option(|subcommand| {
+                            subcommand
+                                .name("join_server")
+                                .description("...")
+                                .kind(CommandOptionType::SubCommand)
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("channel")
+                                        .description("...")
+                                        .kind(CommandOptionType::Channel)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("condition")
+                                        .description("...")
+                                        .kind(CommandOptionType::String)
+                                        .required(true)
+                                        .add_string_choice("role", "0")
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("required_role")
+                                        .description("...")
+                                        .kind(CommandOptionType::Role)
+                                        .required(true)
+                                })
+                                .create_sub_option(|option| {
+                                    option
+                                        .name("invert")
+                                        .description("...")
+                                        .kind(CommandOptionType::Boolean)
+                                        .required(false)
+                                })
+                        })
+                })
+                .create_application_command(|command| { // mod only
+                    command
                         .name("configure")
                         .description("Houses various configuration subcommands")
                         .default_member_permissions(can_manage_messages)

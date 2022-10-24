@@ -1905,6 +1905,10 @@ impl EventHandler for Handler {
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 "log_purge" => self.handle_log_purge(&command, &ctx).await,
+                // "add_auto_response_condition" => ()
+                // "remove_auto_response_condition" => ()
+                // "add_auto_response" => ()
+                // "remove_auto_response" => ()
                 _ => self.handle_invalid(&command).await,
             };
         } else if let Interaction::Autocomplete(completable) = interaction {
