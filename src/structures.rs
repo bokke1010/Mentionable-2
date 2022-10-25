@@ -74,6 +74,28 @@ impl LOGTRIGGER {
             LOGTRIGGER::JoinServer() => 2,
         }
     }
+
+    pub fn fromint(trig_type: u64, ref_id: u64) -> LOGTRIGGER {
+        match (trig_type, ref_id) {
+            (0, rid) => LOGTRIGGER::RoleAdd(RoleId(rid)),
+            (1, rid) => LOGTRIGGER::RoleRemove(RoleId(rid)),
+            (2, _) => LOGTRIGGER::JoinServer(),
+            _ => panic!("invalid logtrigger"),
+        }
+    }
+}
+
+impl fmt::Display for LOGTRIGGER {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            LOGTRIGGER::RoleAdd(id) => write!(f, "Triggered when role with id {} is added", id),
+            LOGTRIGGER::RoleRemove(id) => {
+                write!(f, "Triggered when role with id {} is removed", id)
+            }
+
+            LOGTRIGGER::JoinServer() => write!(f, "Join server trigger"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

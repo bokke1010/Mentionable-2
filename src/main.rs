@@ -82,7 +82,7 @@ impl Handler {
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
     }
 
-    async fn send_text(text: String, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn send_text(text: &str, command: &ApplicationCommandInteraction, ctx: &Context) {
         command
             .create_interaction_response(&ctx.http, |response| {
                 response
@@ -239,7 +239,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -451,7 +451,7 @@ impl Handler {
                 content += format!("\nFailed to add user to list {}", list_name_str).as_str();
             }
         }
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn handle_leave(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -533,7 +533,7 @@ impl Handler {
             };
         }
 
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn handle_remove(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -576,7 +576,7 @@ impl Handler {
             };
         }
 
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -605,7 +605,7 @@ impl Handler {
         let as_admin = Handler::can_manage_messages(command);
         if !as_admin {
             Handler::send_text(
-                String::from("You do not have permission to use this command."),
+                "You do not have permission to use this command.",
                 command,
                 ctx,
             )
@@ -629,7 +629,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn handle_remove_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -647,12 +647,7 @@ impl Handler {
 
         let as_admin = Handler::can_manage_messages(command);
         if !as_admin {
-            Handler::send_text(
-                String::from("You do not have permission to use this command."),
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(command, ctx).await;
             return;
         }
         let mut data = ctx.data.write().await;
@@ -676,7 +671,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn autocomplete_alias(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -798,7 +793,7 @@ impl Handler {
                 content += format!("\nFailed to add user to list {}", list_name_str).as_str();
             }
         }
-        Handler::send_text(content, command, ctx).await;
+        Handler::send_text(&content, command, ctx).await;
     }
 
     async fn handle_kick(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -1593,7 +1588,7 @@ impl Handler {
             x.remove_proposal(list_id).unwrap();
         }
 
-        Handler::send_text("Canceled proposal".to_string(), command, ctx).await;
+        Handler::send_text("Canceled proposal", command, ctx).await;
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) {
@@ -1706,6 +1701,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             'outer: for trigger in triggers {
                 if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
+                    //TODO: multiple id's (channel can differentiate?)
                     for condition in x.get_response_conditions(id).unwrap() {
                         if !match condition {
                             (LOGCONDITION::HasRole(role_id), invert, _) => {
@@ -1918,6 +1914,45 @@ impl Handler {
         component.defer(&ctx.http).await.unwrap();
     }
 
+    async fn handle_list_auto_response(
+        &self,
+        command: &ApplicationCommandInteraction,
+        ctx: &Context,
+    ) {
+        if !Handler::can_manage_messages(&command) {
+            Handler::send_not_allowed(command, ctx).await;
+            return;
+        }
+        let guild_id: GuildId = command.guild_id.unwrap();
+        let mut embed = CreateEmbed::default();
+
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+        if let Ok(x) = db.clone().lock() {
+            let responses = x.get_all_responses(guild_id).unwrap();
+            for (channel_id, response_message, trigger) in responses {
+                embed.field(
+                    trigger,
+                    format!(
+                        "Message to channel with id {} as follows:\n{}",
+                        channel_id, response_message
+                    ),
+                    false,
+                );
+            }
+        } else {
+            panic!("Could not get database access.");
+        }
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.set_embed(embed))
+            })
+            .await
+            .unwrap();
+    }
+
     async fn handle_auto_response(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
@@ -1925,17 +1960,16 @@ impl Handler {
         }
         let guild_id: GuildId = command.guild_id.unwrap();
 
-        // let mut embed = CreateEmbed::default();
+        let message: &str;
 
         let subcom = &command.data.options[0];
+        let CommandDataOption {
+            ref name, options, ..
+        } = subcom;
 
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let CommandDataOption {
-                ref name, options, ..
-            } = subcom;
-
             let mut role_id = RoleId(0);
             let mut channel_id = ChannelId(0);
             let mut response_message = "";
@@ -1957,11 +1991,23 @@ impl Handler {
                 "add_auto_response" => {
                     x.add_response(guild_id, trigger, channel_id, response_message)
                         .unwrap();
+                    message = "Added automatic response.";
                 }
-                "remove_auto_response" => x.remove_response(guild_id, trigger, channel_id).unwrap(),
-                _ => (),
+                "remove_auto_response" => {
+                    if x.remove_response(guild_id, trigger).unwrap() {
+                        message = "Removed automatic response.";
+                    } else {
+                        message = "Could not find automatic response.";
+                    }
+                }
+
+                _ => panic!("Invalid auto response subcommand"),
             }
+        } else {
+            panic!("Could not get database access.");
         }
+
+        Handler::send_text(message, command, ctx).await;
     }
     async fn handle_auto_response_condition(
         &self,
@@ -1974,27 +2020,22 @@ impl Handler {
         }
         let guild_id: GuildId = command.guild_id.unwrap();
 
-        // let mut embed = CreateEmbed::default();
+        let message: &str;
 
         let subcom = &command.data.options[0];
+        let CommandDataOption {
+            ref name, options, ..
+        } = subcom;
 
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let CommandDataOption {
-                ref name, options, ..
-            } = subcom;
-
             let mut role_id = RoleId(0);
             let mut target_role_id = RoleId(0);
-            let mut channel_id = ChannelId(0);
             let mut invert = false;
             for setting in options {
                 match (setting.name.as_str(), &setting.resolved.as_ref().unwrap()) {
                     ("role", CommandDataOptionValue::Role(role)) => role_id = role.id,
-                    ("channel", CommandDataOptionValue::Channel(p_channel)) => {
-                        channel_id = p_channel.id
-                    }
                     ("condition", _) => (),
                     ("required_role", CommandDataOptionValue::Role(role)) => {
                         target_role_id = role.id
@@ -2012,12 +2053,10 @@ impl Handler {
 
             let log_condition = LOGCONDITION::HasRole(target_role_id);
             if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
-                // Multiple possible, one valid
-                x.get_response(guild_id, id).unwrap().0 == channel_id;
-
                 match command.data.name.as_str() {
                     "add_auto_response_condition" => {
                         x.add_response_condition(id, log_condition, invert).unwrap();
+                        message = "Succesfully added condition."
                     }
                     "remove_auto_response_condition" => {
                         let conditions = x.get_response_conditions(id).unwrap();
@@ -2026,23 +2065,20 @@ impl Handler {
                         });
                         if let Some(ind) = ind_opt {
                             x.remove_response_condition(conditions[ind].2).unwrap();
+                            message = "Succesfully removed condition";
                         } else {
-                            panic!("condition does not exist")
+                            message = "Condition not found"
                         }
                     }
-                    _ => (),
+                    _ => panic!("unrecognized auto response condition command"),
                 }
+            } else {
+                message = "No such auto response exists.";
             }
+        } else {
+            panic!("Could not get database access.");
         }
-
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content("test").ephemeral(true))
-            })
-            .await
-            .unwrap();
+        Handler::send_text(message, command, ctx).await;
     }
 }
 
@@ -2069,6 +2105,7 @@ impl EventHandler for Handler {
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 "log_purge" => self.handle_log_purge(&command, &ctx).await,
+                "list_auto_responses" => self.handle_list_auto_response(&command, &ctx).await,
                 "add_auto_response" | "remove_auto_response" => {
                     self.handle_auto_response(&command, &ctx).await
                 }
@@ -2122,9 +2159,12 @@ impl EventHandler for Handler {
         old_if_available: Option<Member>,
         new: Member,
     ) {
+        println!("gmu");
         if let Some(old) = old_if_available {
             let oldset = BTreeSet::from_iter(old.roles);
             let newset = BTreeSet::from_iter(new.roles.iter().cloned());
+
+            println!("old: {:?}\nnew: {:?}", oldset, newset);
 
             let mut responses: Vec<(ChannelId, String)> = vec![];
             responses.extend(
@@ -2151,6 +2191,7 @@ impl EventHandler for Handler {
                 )
                 .await,
             );
+            println!("responses: {:?}", responses);
             for (channel, message_str) in responses {
                 let message_str = message_str
                     .replace("{userID}", format!("{}", new.user.id).as_str())

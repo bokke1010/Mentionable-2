@@ -487,13 +487,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                         .kind(CommandOptionType::Role)
                                         .required(true)
                                 })
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
                         })
                         .create_option(|subcommand| {
                             subcommand
@@ -507,26 +500,12 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                         .kind(CommandOptionType::Role)
                                         .required(true)
                                 })
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
                         })
                         .create_option(|subcommand| {
                             subcommand
                                 .name("join_server")
                                 .description("...")
                                 .kind(CommandOptionType::SubCommand)
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
                         })
                 })
                 .create_application_command(|command| { // mod only
@@ -548,13 +527,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 })
                                 .create_sub_option(|option| {
                                     option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
-                                .create_sub_option(|option| {
-                                    option
                                         .name("condition")
                                         .description("...")
                                         .kind(CommandOptionType::String)
@@ -590,13 +562,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 })
                                 .create_sub_option(|option| {
                                     option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
-                                .create_sub_option(|option| {
-                                    option
                                         .name("condition")
                                         .description("...")
                                         .kind(CommandOptionType::String)
@@ -623,13 +588,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 .name("join_server")
                                 .description("...")
                                 .kind(CommandOptionType::SubCommand)
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
                                 .create_sub_option(|option| {
                                     option
                                         .name("condition")
@@ -673,13 +631,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 })
                                 .create_sub_option(|option| {
                                     option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
-                                .create_sub_option(|option| {
-                                    option
                                         .name("condition")
                                         .description("...")
                                         .kind(CommandOptionType::String)
@@ -715,13 +666,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 })
                                 .create_sub_option(|option| {
                                     option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
-                                .create_sub_option(|option| {
-                                    option
                                         .name("condition")
                                         .description("...")
                                         .kind(CommandOptionType::String)
@@ -748,13 +692,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 .name("join_server")
                                 .description("...")
                                 .kind(CommandOptionType::SubCommand)
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("channel")
-                                        .description("...")
-                                        .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
                                 .create_sub_option(|option| {
                                     option
                                         .name("condition")

@@ -930,25 +930,40 @@ impl Database {
                 params![guild_id.as_u64(), log_id],
                 |row| Ok(
                     (ChannelId( row.get::<usize, u64>(0)?),
-                    row.get::<usize, String>(0)?,)
+                    row.get::<usize, String>(1)?,)
             ))
+    }
+
+    pub fn get_all_responses(
+        &self,
+        guild_id: GuildId,
+    ) -> Result<Vec<(ChannelId, String, LOGTRIGGER)>, Error> {
+        let responses_query = "SELECT response_channel, response_message, trigger, trigger_id \
+                FROM action_response \
+                WHERE guild_id = ?1";
+        let mut stmt = self.db.prepare(responses_query)?;
+        let mut rows = stmt.query(params![guild_id.as_u64()])?;
+
+        let mut responses = Vec::new();
+        while let Some(row) = rows.next()? {
+            responses.push((
+                ChannelId(row.get::<usize, u64>(0)?),
+                row.get::<usize, String>(1)?,
+                LOGTRIGGER::fromint(row.get::<usize, u64>(2)?, row.get::<usize, u64>(3)?),
+            ));
+        }
+        Ok(responses)
     }
 
     pub fn remove_response(
         &mut self,
         guild_id: GuildId,
         log_type: LOGTRIGGER,
-        response_channel: ChannelId,
-    ) -> Result<(), Error> {
-        self.db.execute(
-                "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2 AND response_channel = ?3",
-                params![
-                    guild_id.as_u64(),
-                    log_type.toint(),
-                    response_channel.as_u64(),
-                ],
-            )?;
-        Ok(())
+    ) -> Result<bool, Error> {
+        Ok(self.db.execute(
+            "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
+            params![guild_id.as_u64(), log_type.toint(),],
+        )? > 0)
     }
 
     // conditions
