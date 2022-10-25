@@ -2159,12 +2159,9 @@ impl EventHandler for Handler {
         old_if_available: Option<Member>,
         new: Member,
     ) {
-        println!("gmu");
         if let Some(old) = old_if_available {
             let oldset = BTreeSet::from_iter(old.roles);
             let newset = BTreeSet::from_iter(new.roles.iter().cloned());
-
-            println!("old: {:?}\nnew: {:?}", oldset, newset);
 
             let mut responses: Vec<(ChannelId, String)> = vec![];
             responses.extend(
@@ -2191,7 +2188,6 @@ impl EventHandler for Handler {
                 )
                 .await,
             );
-            println!("responses: {:?}", responses);
             for (channel, message_str) in responses {
                 let message_str = message_str
                     .replace("{userID}", format!("{}", new.user.id).as_str())
@@ -2316,7 +2312,8 @@ async fn main() {
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::GUILD_MEMBERS
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
-        | GatewayIntents::MESSAGE_CONTENT;
+        | GatewayIntents::MESSAGE_CONTENT
+        | GatewayIntents::GUILDS;
 
     // Build our client.
     let mut client = Client::builder(token, intents)
