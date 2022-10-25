@@ -260,13 +260,11 @@ impl Database {
         Ok(id)
     }
 
-    pub fn get_list_names(
-        &mut self,
-        list_id: ListId,
-        guild_id: GuildId,
-    ) -> Result<Vec<String>, Error> {
-        let mut stmt = self.db.prepare("SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND lists.guild_id=?2 AND alias.list_id=lists.id")?;
-        let mut rows = stmt.query(params![list_id, guild_id.as_u64()])?;
+    pub fn get_list_names(&mut self, list_id: ListId) -> Result<Vec<String>, Error> {
+        let mut stmt = self.db.prepare(
+            "SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND alias.list_id=lists.id",
+        )?;
+        let mut rows = stmt.query(params![list_id])?;
         let mut names = Vec::new();
         while let Some(row) = rows.next()? {
             names.push(row.get::<usize, String>(0)?);
@@ -719,7 +717,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_propose_settings(&self, guild_id: GuildId) -> Result<(bool, u64, u64), Error> {
+    pub fn get_propose_settings(&self, guild_id: GuildId) -> Result<(bool, u64, usize), Error> {
         self.db.query_row(
             "SELECT general_propose, propose_timeout, propose_threshold FROM guilds WHERE id = ?1",
             params![guild_id.as_u64()],
@@ -727,7 +725,7 @@ impl Database {
                 Ok((
                     row.get::<usize, bool>(0)?,
                     row.get::<usize, u64>(1)?,
-                    row.get::<usize, u64>(2)?,
+                    row.get::<usize, usize>(2)?,
                 ))
             },
         )
@@ -754,13 +752,29 @@ impl Database {
         Ok(list_id)
     }
 
+    pub fn accept_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
+        // let transaction = self.db.transaction().unwrap();
+        self.set_pingable(list_id, PERMISSION::ALLOW).unwrap();
+        self.set_joinable(list_id, PERMISSION::ALLOW).unwrap();
+        self.set_visible(list_id, true).unwrap();
+        self.remove_proposal(list_id).unwrap();
+        // transaction.commit();
+        Ok(())
+    }
+
     pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
         self.add_member(member_id, list_id).unwrap();
         Ok(())
     }
 
-    pub fn get_proposal_votes(&mut self, list_id: ListId) -> usize {
-        self.get_members_in_list(list_id).unwrap().len()
+    pub fn get_proposal_data(&mut self, list_id: ListId) -> Result<(usize, u64), Error> {
+        let votes = self.get_members_in_list(list_id)?.len();
+        let timestamp = self.db.query_row(
+            "SELECT timestamp FROM proposals WHERE list_id = ?1",
+            params![list_id],
+            |row| row.get::<usize, u64>(0),
+        )?;
+        Ok((votes, timestamp))
     }
 
     pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
@@ -769,14 +783,6 @@ impl Database {
             params![list_id],
             |row| row.get::<usize, u64>(0),
         )?))
-    }
-
-    pub fn get_vote_threshold(&mut self, guild_id: GuildId) -> Result<usize, Error> {
-        self.db.query_row(
-            "SELECT propose_threshold FROM guilds WHERE id=?1",
-            params![guild_id.as_u64()],
-            |row| row.get::<usize, usize>(0),
-        )
     }
 
     pub fn remove_proposal(&mut self, list_id: ListId) -> Result<(), Error> {

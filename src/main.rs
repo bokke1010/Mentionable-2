@@ -62,6 +62,12 @@ enum ListInvalidReasons {
     RoleRestrictPing,
 }
 
+enum ProposalStatus {
+    ACCEPTED,
+    ACTIVE,
+    DENIED,
+}
+
 /*
 enum CommandInvalidReasons {
     ChannelRestriction,
@@ -658,7 +664,7 @@ impl Handler {
             let res_id = x.get_list_id_by_name(list_name, guild_id);
 
             if let Ok(id) = res_id {
-                if x.get_list_names(id, guild_id).unwrap().len() > 1 {
+                if x.get_list_names(id).unwrap().len() > 1 {
                     x.remove_alias(id, list_name).unwrap();
                     content = format!("Removed alias {}.", list_name);
                 } else {
@@ -734,7 +740,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
             for list_id in list_ids {
-                let list_names = x.get_list_names(list_id, guild_id).unwrap();
+                let list_names = x.get_list_names(list_id).unwrap();
                 content += format!("\n{}", list_names.join(", ")).as_str();
             }
         }
@@ -887,9 +893,7 @@ impl Handler {
                             for list_index in page_start..page_end {
                                 page_selection = (page_start, page_end);
                                 visible_lists.push((
-                                    x.get_list_names(lists[list_index].id, guild_id)
-                                        .unwrap()
-                                        .join(", "),
+                                    x.get_list_names(lists[list_index].id).unwrap().join(", "),
                                     lists[list_index].description.clone(),
                                 ));
                             }
@@ -1039,8 +1043,7 @@ impl Handler {
                             "proposal settings",
                             format!("enable {}\ntimeout {}\nthreshold {}", d, e, f),
                             false,
-                        )
-                        .field("Role respondance", "TODO", false);
+                        );
                 }
                 CommandDataOption {
                     ref name, options, ..
@@ -1586,24 +1589,32 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let list_id = x.get_list_id_by_name(&proposal_name, guild_id).unwrap();
             x.remove_proposal(list_id).unwrap();
+            x.remove_list(list_id).unwrap();
         }
 
         Handler::send_text("Canceled proposal", command, ctx).await;
     }
 
-    async fn check_proposal(&self, list_id: ListId, ctx: &Context) {
-        //TODO: this should probably actually do something I suppose?
+    async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let votes = x.get_proposal_votes(list_id);
+            let (votes, timestamp) = x.get_proposal_data(list_id).unwrap();
             let guild_id = x.get_list_guild(list_id).unwrap();
-            let vote_threshold = x.get_vote_threshold(guild_id).unwrap();
+            let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id).unwrap();
             if votes >= vote_threshold {
-                println!("vote succesful");
-                // x.get_proposals()
+                x.accept_proposal(list_id).unwrap();
+                return ProposalStatus::ACCEPTED;
+            } else {
+                let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
+                if timestamp + vote_timeout <= now {
+                    x.remove_proposal(list_id).unwrap();
+                    x.remove_list(list_id).unwrap();
+                }
+                return ProposalStatus::DENIED;
             }
         }
+        ProposalStatus::ACTIVE
     }
 
     async fn autocomplete_proposal(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -1647,7 +1658,7 @@ impl Handler {
             let (_, timeout, threshold) = x.get_propose_settings(guild_id).unwrap();
             let proposals = x.get_proposals(guild_id).unwrap();
             for (name, timestamp, list_id) in proposals {
-                let votes = x.get_proposal_votes(list_id);
+                let (votes, _) = x.get_proposal_data(list_id).unwrap();
                 let minutes = (timeout - (now - timestamp)) / 60;
                 let (hours, minutes) = (minutes / 60, minutes % 60);
                 embed.field(
@@ -1677,14 +1688,38 @@ impl Handler {
         ctx: &Context,
     ) {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
+        let list_names: Vec<String>;
         {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
             if let Ok(mut x) = db.clone().lock() {
+                list_names = x.get_list_names(list_id).unwrap();
                 x.vote_proposal(list_id, component.user.id).unwrap();
+            } else {
+                panic!("database access error");
             }
         }
-        self.check_proposal(list_id, ctx).await;
+        match self.check_proposal(list_id, ctx).await {
+            ProposalStatus::ACCEPTED => {
+                component
+                    .channel_id
+                    .send_message(&ctx.http, |message| {
+                        message.content(format!("Proposal for list {} accepted", list_names[0]))
+                    })
+                    .await
+                    .unwrap();
+            }
+            ProposalStatus::DENIED => {
+                component
+                    .channel_id
+                    .send_message(&ctx.http, |message| {
+                        message.content(format!("Proposal for list {} timed out", list_names[0]))
+                    })
+                    .await
+                    .unwrap();
+            }
+            ProposalStatus::ACTIVE => (),
+        }
         component.defer(&ctx).await.unwrap();
     }
 
