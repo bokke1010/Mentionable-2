@@ -184,7 +184,7 @@ impl Handler {
                         continue;
                     }
 
-                    if *last_time + (list_cooldown as u64) <= timestamp {
+                    if !ignore_cooldown && *last_time + (list_cooldown as u64) >= timestamp {
                         invalid_lists
                             .push((list_name.to_string(), ListInvalidReasons::OnLocalCooldown));
                         continue;
@@ -1790,6 +1790,25 @@ impl Handler {
             return;
         }
 
+        if !command.app_permissions.unwrap().manage_messages() {
+            Handler::send_text("Bot lacks permissions for purge", command, ctx).await;
+        }
+
+        let guild_id = command.guild_id.unwrap();
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let mut nls = false;
+        if let Ok(x) = db.clone().lock() {
+            let so = x.get_log_channel(guild_id).unwrap();
+            if so == None {
+                nls = true;
+            }
+        }
+        if nls {
+            Handler::send_text("No log channel specified", command, ctx).await;
+            return;
+        }
+
         let mut ref_user: Option<&User> = None;
         for field in &command.data.options {
             if field.kind == CommandOptionType::User {
@@ -1816,6 +1835,7 @@ impl Handler {
             };
             select_menu_options.push(CreateSelectMenuOption::new(label, message.id));
         }
+
         let mut select_menu = CreateSelectMenu::default();
         select_menu
             .placeholder("Select multiple messages")
@@ -1870,7 +1890,7 @@ impl Handler {
                 None => return,
             }
         } else {
-            return;
+            panic!("Database access error");
         }
 
         let ids = &component
@@ -1890,22 +1910,37 @@ impl Handler {
         let mut embed = CreateEmbed::default();
         embed.title(format!("Delete log: {}", component.data.custom_id));
         for message in messages.into_iter().filter(|a| ids.contains(&a.id)) {
-            embed.field(
-                message.author.name,
-                if message.content.len() > 0 {
-                    message.content
-                } else {
-                    "Embed / image".to_string()
-                },
-                false,
-            );
+            const SUBMESSAGE_LENGTH: usize = 970;
+            let mut citer = message.content.chars();
+            let mut i = 0;
+            loop {
+                let submessage = citer.by_ref().take(SUBMESSAGE_LENGTH).collect::<String>();
+                if submessage.len() == 0 && i > 0 {
+                    break;
+                }
+
+                embed.field(
+                    if i == 0 {
+                        &message.author.name
+                    } else {
+                        "continued..."
+                    },
+                    if submessage.len() > 0 {
+                        &submessage
+                    } else {
+                        "Embed / image"
+                    },
+                    false,
+                );
+                i += 1;
+            }
         }
 
         component
             .channel_id
             .delete_messages(&ctx.http, ids)
             .await
-            .unwrap(); //TODO: check bot permission for this
+            .unwrap();
 
         res_cid
             .send_message(&ctx.http, |response| response.set_embed(embed))
@@ -2009,6 +2044,7 @@ impl Handler {
 
         Handler::send_text(message, command, ctx).await;
     }
+
     async fn handle_auto_response_condition(
         &self,
         command: &ApplicationCommandInteraction,

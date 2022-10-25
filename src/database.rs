@@ -40,7 +40,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS lists ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER REFERENCES guilds(id), \
-                description         TEXT, \
+                description         TEXT    DEFAULT '', \
                 cooldown            INTEGER DEFAULT -1 CHECK( cooldown >= -1 ), \
                 join_permission     INTEGER DEFAULT 0 CHECK( join_permission >= 0 AND join_permission <= 2 ), \
                 ping_permission     INTEGER DEFAULT 0 CHECK( ping_permission >= 0 AND ping_permission <= 2 ), \
