@@ -1,5 +1,5 @@
 use crate::structures::{ListId, PingList, LOGCONDITION, LOGTRIGGER, PERMISSION};
-use rusqlite::{named_params, params, Connection, Error, Result};
+use rusqlite::{named_params, params, Connection, Error, OptionalExtension, Result};
 use serenity::model::id::*;
 
 pub struct Database {
@@ -36,7 +36,8 @@ impl Database {
             CREATE TABLE IF NOT EXISTS memberships ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 user_id             INTEGER NOT NULL, \
-                list_id             INTEGER NOT NULL REFERENCES lists(id));\n\
+                list_id             INTEGER NOT NULL REFERENCES lists(id), \
+                UNIQUE(user_id, list_id) );\n\
             CREATE TABLE IF NOT EXISTS lists ( \
                 id                  INTEGER PRIMARY KEY ASC, \
                 guild_id            INTEGER REFERENCES guilds(id), \
@@ -208,12 +209,21 @@ impl Database {
         Ok(())
     }
 
-    pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
-        self.db.execute(
+    pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<bool, Error> {
+        match self.db.execute(
             "INSERT INTO alias (list_id, name) VALUES (?1, ?2)",
             params![list_id, name],
-        )?;
-        Ok(())
+        ) {
+            Err(Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: _,
+                    extended_code: 2067,
+                },
+                _,
+            )) => Ok(false), // Unique constraint violation, alias already exists for this list
+            Err(a) => Err(a),
+            Ok(_) => Ok(true),
+        }
     }
 
     pub fn remove_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
@@ -252,12 +262,11 @@ impl Database {
         &mut self,
         list_name: &str,
         guild_id: GuildId,
-    ) -> Result<ListId, Error> {
-        let id = self.db.query_row(
+    ) -> Result<Option<ListId>, Error> {
+        self.db.query_row(
                 "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
                 params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
-            )?;
-        Ok(id)
+            ).optional()
     }
 
     pub fn get_list_names(&mut self, list_id: ListId) -> Result<Vec<String>, Error> {
@@ -458,12 +467,29 @@ impl Database {
         Ok(lists)
     }
 
-    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> Result<(), Error> {
-        self.db.execute(
+    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> Result<bool, Error> {
+        let a = self.db.execute(
             "INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)",
             params![member_id.as_u64(), list_id],
-        )?;
-        Ok(())
+        );
+        match a {
+            Err(Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: _,
+                    extended_code: 2067, // Constraint violation, already got this membership
+                },
+                _,
+            )) => Ok(false), // Already in list
+            Err(Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: _,
+                    extended_code: 787,
+                },
+                _,
+            )) => Ok(false), // list not found
+            Err(b) => Err(b),
+            Ok(_) => Ok(true),
+        }
     }
 
     pub fn remove_member(&mut self, member_id: UserId, list_id: ListId) -> Result<(), Error> {
@@ -738,8 +764,11 @@ impl Database {
         guild_id: GuildId,
         name: &String,
         timestamp: i64,
-    ) -> Result<ListId, Error> {
+    ) -> Result<Option<ListId>, Error> {
         // let transaction = self.db.transaction().unwrap();
+        if let Ok(Some(_)) = self.get_list_id_by_name(name, guild_id) {
+            return Ok(None);
+        }
         let list_id = self.add_list(guild_id, name).unwrap();
         self.set_pingable(list_id, PERMISSION::DENY).unwrap();
         self.set_joinable(list_id, PERMISSION::DENY).unwrap();
@@ -749,7 +778,7 @@ impl Database {
             params![list_id, timestamp],
         )?;
         // transaction.commit();
-        Ok(list_id)
+        Ok(Some(list_id))
     }
 
     pub fn accept_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
@@ -763,7 +792,7 @@ impl Database {
     }
 
     pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
-        self.add_member(member_id, list_id).unwrap();
+        self.add_member(member_id, list_id)?;
         Ok(())
     }
 

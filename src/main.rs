@@ -176,7 +176,7 @@ impl Handler {
                 let list_name = list_name.value.unwrap();
                 let list_name = list_name.as_str().unwrap();
 
-                if let Ok(list_id) = x.get_list_id_by_name(list_name, guild_id) {
+                if let Ok(Some(list_id)) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
                     let (mut list_cooldown, _, list_restrict_ping) =
                         x.get_list_permissions(list_id);
@@ -385,14 +385,14 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
-            if let Ok(list_id) = res_list_id {
+            if let Ok(Some(list_id)) = res_list_id {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
                     return false;
                 }
-                x.add_member(member_id, list_id)
+                return x
+                    .add_member(member_id, list_id)
                     .expect("Failed to add member to list");
-                return true;
             }
         }
         return false;
@@ -411,7 +411,7 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             let get_list_id = x.get_list_id_by_name(list_name, guild_id);
-            if let Ok(list_id) = get_list_id {
+            if let Ok(Some(list_id)) = get_list_id {
                 if !x.has_member(member_id, list_id) {
                     return false;
                 }
@@ -423,7 +423,6 @@ impl Handler {
                     .expect("Failed to remove membership.");
                 return true;
             }
-            return false;
         }
         return false;
     }
@@ -568,11 +567,11 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
-                Ok(id) => {
+                Ok(Some(id)) => {
                     x.remove_list(id).expect("list removal failed");
                     content = "Removed list.".to_string();
                 }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Ok(None) => {
                     content += "List does not exist.";
                     ()
                 }
@@ -625,10 +624,10 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let res_id = x.get_list_id_by_name(list_name, guild_id);
 
-            if let Ok(id) = res_id {
+            if let Ok(Some(id)) = res_id {
                 x.add_alias(id, list_alias).unwrap();
                 content = format!("Added alias {} to list {}.", list_alias, list_name);
-            } else if Err(rusqlite::Error::QueryReturnedNoRows) == res_id {
+            } else if Ok(None) == res_id {
                 content = format!("There is no list named {} to alias to.", list_alias);
             } else {
                 res_id.unwrap();
@@ -663,14 +662,14 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let res_id = x.get_list_id_by_name(list_name, guild_id);
 
-            if let Ok(id) = res_id {
+            if let Ok(Some(id)) = res_id {
                 if x.get_list_names(id).unwrap().len() > 1 {
                     x.remove_alias(id, list_name).unwrap();
                     content = format!("Removed alias {}.", list_name);
                 } else {
                     content = format!("You cannot remove the last alias of a list.")
                 }
-            } else if Err(rusqlite::Error::QueryReturnedNoRows) == res_id {
+            } else if Ok(None) == res_id {
                 content = format!("There is no list named {} to alias to.", list_name);
             } else {
                 res_id.unwrap();
@@ -1226,14 +1225,24 @@ impl Handler {
                         .resolved
                         .as_ref()
                         .unwrap();
-                    let list: &str = if let CommandDataOptionValue::String(ref list) = *list_value {
-                        list.as_str()
-                    } else {
-                        panic!("List argument is not valid")
-                    };
+                    let list_str: &str =
+                        if let CommandDataOptionValue::String(ref list_ref) = *list_value {
+                            list_ref.as_str()
+                        } else {
+                            panic!("List argument is not valid")
+                        };
                     let list = x
-                        .get_list_id_by_name(list, guild_id)
+                        .get_list_id_by_name(list_str, guild_id)
                         .expect("List not found");
+                    if None == list {
+                        embed.field(
+                            "List not found",
+                            format!("The list with name {} was not found.", list_str),
+                            false,
+                        );
+                    }
+                    let list = list.unwrap();
+
                     for setting in options {
                         match setting.name.as_str() {
                             "description" => {
@@ -1491,7 +1500,7 @@ impl Handler {
         let guild_id: GuildId = command.guild_id.unwrap();
         let channel_id = command.channel_id;
         let name = command.data.options[0].value.as_ref().unwrap().to_string();
-        let mut proposal_id: u64 = 0;
+        let mut proposal_id: Option<u64> = None;
         let as_admin = Handler::can_manage_messages(command);
         let member = command.member.as_ref().unwrap();
         let role_ids: &Vec<RoleId> = &member.roles;
@@ -1523,13 +1532,18 @@ impl Handler {
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
                 proposal_id = x.start_proposal(guild_id, &name, timestamp).unwrap();
+                if proposal_id != None {
+                    x.vote_proposal(proposal_id.unwrap(), member.user.id)
+                        .unwrap();
+                }
             }
         } else {
             return;
         }
 
         let mut embed = CreateEmbed::default();
-        if override_canpropose != PERMISSION::DENY {
+
+        if proposal_id != None && override_canpropose != PERMISSION::DENY {
             embed
                 .title(format!("A new list has been proposed: {}", name))
                 .author(|author| {
@@ -1541,7 +1555,7 @@ impl Handler {
 
             let mut button = CreateButton::default();
             button
-                .custom_id(proposal_id.to_string())
+                .custom_id(proposal_id.unwrap().to_string())
                 .label("Vote")
                 .style(ButtonStyle::Secondary);
             let mut action_row = CreateActionRow::default();
@@ -1559,9 +1573,13 @@ impl Handler {
                 .await
                 .unwrap();
         } else {
-            embed
-                .title("You do not have permission to use /propose here.")
-                .color((255, 0, 0));
+            if override_canpropose == PERMISSION::DENY {
+                embed
+                    .title("You do not have permission to use /propose here.")
+                    .color((255, 0, 0));
+            } else {
+                embed.title("This list already exists").color((0, 255, 0));
+            }
             command
                 .create_interaction_response(&ctx.http, |response| {
                     response
@@ -1582,17 +1600,29 @@ impl Handler {
         }
         let guild_id = command.guild_id.unwrap();
         let proposal_name = command.data.options[0].value.as_ref().unwrap().to_string();
+        let mut succes = false;
 
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
         if let Ok(mut x) = db.clone().lock() {
-            let list_id = x.get_list_id_by_name(&proposal_name, guild_id).unwrap();
-            x.remove_proposal(list_id).unwrap();
-            x.remove_list(list_id).unwrap();
+            let list_id_res = x.get_list_id_by_name(&proposal_name, guild_id);
+            if let Ok(Some(list_id)) = list_id_res {
+                x.remove_proposal(list_id).unwrap();
+                x.remove_list(list_id).unwrap();
+                succes = true;
+            }
         }
-
-        Handler::send_text("Canceled proposal", command, ctx).await;
+        Handler::send_text(
+            if succes {
+                "Canceled proposal"
+            } else {
+                "Failed to cancel proposal"
+            },
+            command,
+            ctx,
+        )
+        .await;
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
@@ -1610,8 +1640,8 @@ impl Handler {
                 if timestamp + vote_timeout <= now {
                     x.remove_proposal(list_id).unwrap();
                     x.remove_list(list_id).unwrap();
+                    return ProposalStatus::DENIED;
                 }
-                return ProposalStatus::DENIED;
             }
         }
         ProposalStatus::ACTIVE
@@ -1718,7 +1748,9 @@ impl Handler {
                     .await
                     .unwrap();
             }
-            ProposalStatus::ACTIVE => (),
+            ProposalStatus::ACTIVE => {
+                component.defer(&ctx.http).await.unwrap();
+            }
         }
         component.defer(&ctx).await.unwrap();
     }
