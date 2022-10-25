@@ -161,6 +161,13 @@ impl Database {
         Ok(list_id)
     }
 
+    pub fn remove_list(&mut self, list_id: ListId) -> Result<(), Error> {
+        self.remove_all_alias(list_id)?;
+        self.db
+            .execute("DELETE FROM lists WHERE list_id = ?1", params![list_id])?;
+        Ok(())
+    }
+
     //List config
     pub fn set_pingable(&mut self, list_id: ListId, pingable: PERMISSION) -> Result<(), Error> {
         self.db.execute(
@@ -214,6 +221,12 @@ impl Database {
             "DELETE FROM alias WHERE list_id = ?1 AND name = ?2",
             params![list_id, name],
         )?;
+        Ok(())
+    }
+
+    fn remove_all_alias(&mut self, list_id: ListId) -> Result<(), Error> {
+        self.db
+            .execute("DELETE FROM alias WHERE list_id = ?1", params![list_id])?;
         Ok(())
     }
 

@@ -536,6 +536,49 @@ impl Handler {
         Handler::send_text(content, command, ctx).await;
     }
 
+    async fn handle_remove(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        let list_name: &str = &command
+            .data
+            .options
+            .get(0)
+            .expect("No list name given")
+            .value
+            .as_ref()
+            .expect("List name argument has no value")
+            .as_str()
+            .expect("list name is not a valid str.");
+
+        let as_admin = Handler::can_manage_messages(command);
+        if !as_admin {
+            Handler::send_not_allowed(&command, &ctx).await;
+            return;
+        }
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+        let mut content = format!("Removing list {}.", list_name);
+
+        if let Ok(mut x) = db.clone().lock() {
+            match x.get_list_id_by_name(list_name, guild_id) {
+                Ok(id) => {
+                    x.remove_list(id).expect("list removal failed");
+                    content = "Removed list.".to_string();
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    content += "List does not exist.";
+                    ()
+                }
+                a => {
+                    a.unwrap();
+                }
+            };
+        }
+
+        Handler::send_text(content, command, ctx).await;
+    }
+
     async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let list_name: &str = &command
@@ -1898,7 +1941,7 @@ impl EventHandler for Handler {
                 // admin commands
                 "alias" => self.handle_alias(&command, &ctx).await,
                 "create" => self.handle_create(&command, &ctx).await,
-                // "remove" => self.handle_remove(&command, &ctx).await,
+                "remove" => self.handle_remove(&command, &ctx).await,
                 "add" => self.handle_add(&command, &ctx).await,
                 "kick" => self.handle_kick(&command, &ctx).await,
                 "remove_alias" => self.handle_remove_alias(&command, &ctx).await,

@@ -76,6 +76,19 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                 })
                 .create_application_command(|command| {
                     command
+                        .name("remove")
+                        .description("Removes a list")
+                        .default_member_permissions(can_manage_messages)
+                        .create_option(|option| {
+                            option
+                                .name("name")
+                                .description("the name of the list to remove")
+                                .kind(CommandOptionType::String)
+                                .required(true)
+                        })
+                })
+                .create_application_command(|command| {
+                    command
                         .name("join")
                         .description("Join all given lists")
                         .create_option(|option| {
