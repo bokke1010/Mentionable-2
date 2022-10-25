@@ -934,7 +934,7 @@ impl Database {
             ))
     }
 
-    pub fn delete_response(
+    pub fn remove_response(
         &mut self,
         guild_id: GuildId,
         log_type: LOGTRIGGER,

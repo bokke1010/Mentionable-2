@@ -494,13 +494,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                         .kind(CommandOptionType::Channel)
                                         .required(true)
                                 })
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("message")
-                                        .description("...")
-                                        .kind(CommandOptionType::String)
-                                        .required(true)
-                                })
                         })
                         .create_option(|subcommand| {
                             subcommand
@@ -521,13 +514,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                         .kind(CommandOptionType::Channel)
                                         .required(true)
                                 })
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("message")
-                                        .description("...")
-                                        .kind(CommandOptionType::String)
-                                        .required(true)
-                                })
                         })
                         .create_option(|subcommand| {
                             subcommand
@@ -539,13 +525,6 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                         .name("channel")
                                         .description("...")
                                         .kind(CommandOptionType::Channel)
-                                        .required(true)
-                                })
-                                .create_sub_option(|option| {
-                                    option
-                                        .name("message")
-                                        .description("...")
-                                        .kind(CommandOptionType::String)
                                         .required(true)
                                 })
                         })

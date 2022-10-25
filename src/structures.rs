@@ -76,7 +76,7 @@ impl LOGTRIGGER {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum LOGCONDITION {
     HasRole(RoleId),
 }

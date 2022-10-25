@@ -1790,6 +1790,7 @@ impl Handler {
 
     async fn handle_log_purge(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(&command) {
+            Handler::send_not_allowed(command, ctx).await;
             return;
         }
 
@@ -1915,13 +1916,133 @@ impl Handler {
             .await
             .unwrap();
         component.defer(&ctx.http).await.unwrap();
-        // component.create_interaction_response(&ctx.http, |response| {
-        //     response
-        //         .kind(InteractionResponseType::ChannelMessageWithSource)
-        //         .interaction_response_data(|message| {
-        //             message.add_embed(embed)
-        //         })
-        // }).await.unwrap();
+    }
+
+    async fn handle_auto_response(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        if !Handler::can_manage_messages(&command) {
+            Handler::send_not_allowed(command, ctx).await;
+            return;
+        }
+        let guild_id: GuildId = command.guild_id.unwrap();
+
+        // let mut embed = CreateEmbed::default();
+
+        let subcom = &command.data.options[0];
+
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+        if let Ok(mut x) = db.clone().lock() {
+            let CommandDataOption {
+                ref name, options, ..
+            } = subcom;
+
+            let mut role_id = RoleId(0);
+            let mut channel_id = ChannelId(0);
+            let mut response_message = "";
+            for setting in options {
+                match &setting.resolved.as_ref().unwrap() {
+                    CommandDataOptionValue::Role(role) => role_id = role.id,
+                    CommandDataOptionValue::Channel(p_channel) => channel_id = p_channel.id,
+                    CommandDataOptionValue::String(string) => response_message = string,
+                    _ => (),
+                }
+            }
+            let trigger = match name.as_str() {
+                "role_add" => LOGTRIGGER::RoleAdd(role_id),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "join_server" => LOGTRIGGER::JoinServer(),
+                _ => panic!("invalid subcommand name"),
+            };
+            match command.data.name.as_str() {
+                "add_auto_response" => {
+                    x.add_response(guild_id, trigger, channel_id, response_message)
+                        .unwrap();
+                }
+                "remove_auto_response" => x.remove_response(guild_id, trigger, channel_id).unwrap(),
+                _ => (),
+            }
+        }
+    }
+    async fn handle_auto_response_condition(
+        &self,
+        command: &ApplicationCommandInteraction,
+        ctx: &Context,
+    ) {
+        if !Handler::can_manage_messages(&command) {
+            Handler::send_not_allowed(command, ctx).await;
+            return;
+        }
+        let guild_id: GuildId = command.guild_id.unwrap();
+
+        // let mut embed = CreateEmbed::default();
+
+        let subcom = &command.data.options[0];
+
+        let data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+        if let Ok(mut x) = db.clone().lock() {
+            let CommandDataOption {
+                ref name, options, ..
+            } = subcom;
+
+            let mut role_id = RoleId(0);
+            let mut target_role_id = RoleId(0);
+            let mut channel_id = ChannelId(0);
+            let mut invert = false;
+            for setting in options {
+                match (setting.name.as_str(), &setting.resolved.as_ref().unwrap()) {
+                    ("role", CommandDataOptionValue::Role(role)) => role_id = role.id,
+                    ("channel", CommandDataOptionValue::Channel(p_channel)) => {
+                        channel_id = p_channel.id
+                    }
+                    ("condition", _) => (),
+                    ("required_role", CommandDataOptionValue::Role(role)) => {
+                        target_role_id = role.id
+                    }
+                    ("invert", CommandDataOptionValue::Boolean(b)) => invert = *b,
+                    _ => (),
+                }
+            }
+            let trigger = match name.as_str() {
+                "role_add" => LOGTRIGGER::RoleAdd(role_id),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "join_server" => LOGTRIGGER::JoinServer(),
+                _ => panic!("invalid subcommand name"),
+            };
+
+            let log_condition = LOGCONDITION::HasRole(target_role_id);
+            if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
+                // Multiple possible, one valid
+                x.get_response(guild_id, id).unwrap().0 == channel_id;
+
+                match command.data.name.as_str() {
+                    "add_auto_response_condition" => {
+                        x.add_response_condition(id, log_condition, invert).unwrap();
+                    }
+                    "remove_auto_response_condition" => {
+                        let conditions = x.get_response_conditions(id).unwrap();
+                        let ind_opt = conditions.iter().position(|(t_log_cond, t_inv, _)| {
+                            *t_log_cond == log_condition && *t_inv == invert
+                        });
+                        if let Some(ind) = ind_opt {
+                            x.remove_response_condition(conditions[ind].2).unwrap();
+                        } else {
+                            panic!("condition does not exist")
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+
+        command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content("test").ephemeral(true))
+            })
+            .await
+            .unwrap();
     }
 }
 
@@ -1948,10 +2069,12 @@ impl EventHandler for Handler {
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 "log_purge" => self.handle_log_purge(&command, &ctx).await,
-                // "add_auto_response_condition" => ()
-                // "remove_auto_response_condition" => ()
-                // "add_auto_response" => ()
-                // "remove_auto_response" => ()
+                "add_auto_response" | "remove_auto_response" => {
+                    self.handle_auto_response(&command, &ctx).await
+                }
+                "add_auto_response_condition" | "remove_auto_response_condition" => {
+                    self.handle_auto_response_condition(&command, &ctx).await
+                }
                 _ => self.handle_invalid(&command).await,
             };
         } else if let Interaction::Autocomplete(completable) = interaction {
