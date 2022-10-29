@@ -781,6 +781,8 @@ impl Database {
         Ok(Some(list_id))
     }
 
+    // pub fn proposal_refe
+
     pub fn accept_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
         // let transaction = self.db.transaction().unwrap();
         self.set_pingable(list_id, PERMISSION::ALLOW).unwrap();
@@ -796,10 +798,12 @@ impl Database {
         Ok(())
     }
 
+    // pub fn update_proposal()
+
     pub fn get_proposal_data(&mut self, list_id: ListId) -> Result<(usize, u64), Error> {
         let votes = self.get_members_in_list(list_id)?.len();
         let timestamp = self.db.query_row(
-            "SELECT timestamp FROM proposals WHERE list_id = ?1",
+            "SELECT channel_id, timestamp FROM proposals WHERE list_id = ?1",
             params![list_id],
             |row| row.get::<usize, u64>(0),
         )?;

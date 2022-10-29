@@ -6,7 +6,7 @@ use serenity::{
     model::{
         application::{
             command::CommandOptionType,
-            component::{ButtonStyle, InputTextStyle},
+            component::{ActionRow, ActionRowComponent, ButtonStyle, InputTextStyle},
             interaction::{
                 application_command::{
                     ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
@@ -1593,37 +1593,58 @@ impl Handler {
         }
     }
 
+    //TODO: make context menu command
     async fn handle_cancel_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
-            Handler::send_not_allowed(&command, &ctx).await;
+            command.defer(&ctx.http).await.ok();
             return;
         }
-        let guild_id = command.guild_id.unwrap();
-        let proposal_name = command.data.options[0].value.as_ref().unwrap().to_string();
-        let mut succes = false;
+
+        let mut list_id: Option<ListId> = None;
+
+        for (_, message) in &command.data.resolved.messages {
+            if message.is_own(&ctx.cache) {
+                match &message.components[..] {
+                    [ActionRow { components: cs, .. }] => {
+                        if let ActionRowComponent::Button(b) = &cs[0] {
+                            // hi
+                            if b.label.as_ref().unwrap() == "Vote" {
+                                list_id =
+                                    Some(b.custom_id.as_ref().unwrap().parse::<u64>().unwrap());
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+
+        if list_id == None {
+            command.defer(&ctx.http).await.ok();
+            return;
+        }
+        let list_id = list_id.unwrap();
 
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
         if let Ok(mut x) = db.clone().lock() {
-            let list_id_res = x.get_list_id_by_name(&proposal_name, guild_id);
-            if let Ok(Some(list_id)) = list_id_res {
-                x.remove_proposal(list_id).unwrap();
-                x.remove_list(list_id).unwrap();
-                succes = true;
-            }
+            x.remove_proposal(list_id).unwrap();
+            x.remove_list(list_id).unwrap();
         }
-        Handler::send_text(
-            if succes {
-                "Canceled proposal"
-            } else {
-                "Failed to cancel proposal"
-            },
-            command,
-            ctx,
-        )
-        .await;
+
+        let mut embed = CreateEmbed::default();
+        embed.title("Voting cancelled");
+
+        command
+            .edit_original_interaction_response(&ctx.http, |prev| {
+                prev.components(|c| c).set_embed(embed)
+            })
+            .await
+            .ok();
     }
+
+    //TODO: periodic checks
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
         let mut data = ctx.data.write().await;
@@ -1665,6 +1686,7 @@ impl Handler {
                 .get_proposals_by_search(guild_id, 0, SUGGESTIONS, filter)
                 .unwrap();
         }
+        //todo: update proposal embed
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
                 for list in aliases {
@@ -1768,7 +1790,6 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             'outer: for trigger in triggers {
                 if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
-                    //TODO: multiple id's (channel can differentiate?)
                     for condition in x.get_response_conditions(id).unwrap() {
                         if !match condition {
                             (LOGCONDITION::HasRole(role_id), invert, _) => {
@@ -1786,7 +1807,7 @@ impl Handler {
         responses
     }
 
-    async fn handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn _handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let mut main_question = CreateActionRow::default();
         main_question.create_input_text(|text| {
             text.custom_id("top")
@@ -2191,7 +2212,7 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             match command.data.name.as_str() {
                 "ping" => self.handle_ping(&command, &ctx).await,
-                "ping with context" => self.handle_context_ping(&command, &ctx).await,
+                // "ping with context" => self.handle_context_ping(&command, &ctx).await,
                 "join" => self.handle_join(&command, &ctx).await,
                 "leave" => self.handle_leave(&command, &ctx).await,
                 "get" => self.handle_get(&command, &ctx).await,

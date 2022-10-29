@@ -239,17 +239,9 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                 })
                 .create_application_command(|command| { // Only if proposals are enabled
                     command
-                        .name("cancel_proposal")
-                        .description("Cancel a proposed list")
+                        .name("Cancel proposal")
                         .default_member_permissions(can_manage_messages)
-                        .create_option(|option| {
-                            option
-                                .name("name")
-                                .description("The name for this proposal")
-                                .kind(CommandOptionType::String)
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
+                        .kind(CommandType::Message)
                 })
                 .create_application_command(|command| { // mod only
                     command
