@@ -90,10 +90,7 @@ impl Database {
             .query_row(
                 "SELECT EXISTS (SELECT id FROM guilds WHERE id=?1)",
                 params![guild_id.as_u64()],
-                |row| match row.get(0).expect("No value in row from guild exist query") {
-                    1 => Ok(true),
-                    _ => Ok(false),
-                },
+                |row| row.get::<usize, bool>(0),
             )
             .expect("Unexpected database error when checking guild existance")
     }
@@ -162,11 +159,23 @@ impl Database {
         Ok(list_id)
     }
 
-    pub fn remove_list(&mut self, list_id: ListId) -> Result<(), Error> {
+    pub fn remove_list(&mut self, list_id: ListId) -> Result<bool, Error> {
         self.remove_all_alias(list_id)?;
+        self.remove_all_members(list_id)?;
+        Ok(self
+            .db
+            .execute("DELETE FROM lists WHERE id = ?1", params![list_id])?
+            > 0)
+    }
+
+    pub fn list_exists(&mut self, list_id: ListId) -> bool {
         self.db
-            .execute("DELETE FROM lists WHERE list_id = ?1", params![list_id])?;
-        Ok(())
+            .query_row(
+                "SELECT EXISTS (SELECT id FROM lists WHERE id=?1)",
+                params![list_id],
+                |row| row.get::<usize, bool>(0),
+            )
+            .expect("Unexpected database error when checking membership existance")
     }
 
     //List config
@@ -237,6 +246,14 @@ impl Database {
     fn remove_all_alias(&mut self, list_id: ListId) -> Result<(), Error> {
         self.db
             .execute("DELETE FROM alias WHERE list_id = ?1", params![list_id])?;
+        Ok(())
+    }
+
+    fn remove_all_members(&mut self, list_id: ListId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM memberships WHERE list_id = ?1",
+            params![list_id],
+        )?;
         Ok(())
     }
 
@@ -432,13 +449,7 @@ impl Database {
             .query_row(
                 "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
                 params![member_id.as_u64(), list_id],
-                |row| match row
-                    .get(0)
-                    .expect("No value in row from membership exist query")
-                {
-                    1 => Ok(true),
-                    _ => Ok(false),
-                },
+                |row| row.get::<usize, bool>(0),
             )
             .expect("Unexpected database error when checking membership existance")
     }
@@ -457,14 +468,12 @@ impl Database {
         Ok(lists)
     }
 
-    pub fn get_members_in_list(&mut self, list_id: ListId) -> Result<Vec<u64>, Error> {
-        let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=?")?;
-        let mut rows = stmt.query(params![list_id])?;
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push(row.get(0)?);
-        }
-        Ok(lists)
+    pub fn get_members_in_list(&mut self, list_id: ListId) -> Vec<u64> {
+        let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=?").unwrap();
+        let rows = stmt
+            .query_map(params![list_id], |row| row.get::<usize, u64>(0))
+            .unwrap();
+        rows.collect::<Result<Vec<u64>, _>>().unwrap()
     }
 
     pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> Result<bool, Error> {
@@ -800,14 +809,21 @@ impl Database {
 
     // pub fn update_proposal()
 
-    pub fn get_proposal_data(&mut self, list_id: ListId) -> Result<(usize, u64), Error> {
-        let votes = self.get_members_in_list(list_id)?.len();
-        let timestamp = self.db.query_row(
-            "SELECT channel_id, timestamp FROM proposals WHERE list_id = ?1",
-            params![list_id],
-            |row| row.get::<usize, u64>(0),
-        )?;
-        Ok((votes, timestamp))
+    pub fn get_proposal_data(&mut self, list_id: ListId) -> Option<(usize, u64)> {
+        let votes = self.get_members_in_list(list_id).len();
+        let timestamp = self
+            .db
+            .query_row(
+                "SELECT timestamp FROM proposals WHERE list_id = ?1",
+                params![list_id],
+                |row| row.get::<usize, u64>(0),
+            )
+            .optional()
+            .unwrap();
+        if let Some(timestamp) = timestamp {
+            return Some((votes, timestamp));
+        }
+        None
     }
 
     pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
@@ -818,37 +834,11 @@ impl Database {
         )?))
     }
 
-    pub fn remove_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
-        self.db
-            .execute("DELETE FROM proposals WHERE list_id = ?1", params![list_id])?;
-        Ok(())
-    }
-
-    pub fn get_proposals_by_search(
-        &mut self,
-        guild_id: GuildId,
-        start: usize,
-        amount: usize,
-        filter: &str,
-    ) -> Result<Vec<String>, Error> {
-        let lists_query = "SELECT alias.name \
-                FROM lists, alias, proposals \
-                WHERE lists.guild_id=:guid \
-                AND alias.name LIKE '%' || :filter || '%' \
-                AND alias.list_id = lists.id \
-                AND lists.id = proposals.list_id \
-                ORDER BY alias.name ASC \
-                LIMIT :start, :amt";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start }
-            )?;
-
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push(row.get::<usize, String>(0)?);
-        }
-        Ok(lists)
+    pub fn remove_proposal(&mut self, list_id: ListId) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .execute("DELETE FROM proposals WHERE list_id = ?1", params![list_id])?
+            > 0)
     }
 
     pub fn get_proposals(&mut self, guild_id: GuildId) -> Result<Vec<(String, u64, u64)>, Error> {
@@ -868,6 +858,20 @@ impl Database {
                 row.get::<usize, u64>(1)?,
                 row.get::<usize, u64>(2)?,
             ));
+        }
+        Ok(lists)
+    }
+
+    pub fn get_bot_proposals(&mut self) -> Result<Vec<(u64, u64)>, Error> {
+        let lists_query = "SELECT lists.id, lists.guild_id \
+                FROM lists, proposals \
+                WHERE lists.id = proposals.list_id";
+        let mut stmt = self.db.prepare(lists_query)?;
+        let mut rows = stmt.query(params![])?;
+
+        let mut lists = Vec::new();
+        while let Some(row) = rows.next()? {
+            lists.push((row.get::<usize, u64>(0)?, row.get::<usize, u64>(1)?));
         }
         Ok(lists)
     }

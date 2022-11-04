@@ -28,8 +28,13 @@ use std::{
     cmp::min,
     collections::BTreeSet,
     env,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
+
+use dotenv::dotenv;
 
 mod structures;
 use structures::{ListId, LOGCONDITION, LOGTRIGGER, PERMISSION};
@@ -66,6 +71,7 @@ enum ProposalStatus {
     ACCEPTED,
     ACTIVE,
     DENIED,
+    REMOVED,
 }
 
 /*
@@ -77,7 +83,9 @@ enum CommandInvalidReasons {
 }
 */
 
-struct Handler;
+struct Handler {
+    is_loop_running: AtomicBool,
+}
 
 impl Handler {
     fn can_manage_messages(command: &ApplicationCommandInteraction) -> bool {
@@ -195,7 +203,8 @@ impl Handler {
                             .push((list_name.to_string(), ListInvalidReasons::OnLocalCooldown));
                         continue;
                     }
-                    members.extend(x.get_members_in_list(list_id).unwrap());
+                    // members.intersection(other)
+                    members.extend(x.get_members_in_list(list_id));
                     list_ids.push(list_id);
                 } else {
                     invalid_lists.push((list_name.to_string(), ListInvalidReasons::DoesNotExist));
@@ -525,8 +534,8 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
-                Ok(_) => content = "This list already exists.".to_string(),
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Ok(Some(_)) => content = "This list already exists.".to_string(),
+                Ok(None) => {
                     x.add_list(guild_id, &list_name.to_string())
                         .expect("list creation failed");
                     content += "Created list.";
@@ -1593,24 +1602,35 @@ impl Handler {
         }
     }
 
-    //TODO: make context menu command
     async fn handle_cancel_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
-            command.defer(&ctx.http).await.ok();
+            command
+                .create_interaction_response(&ctx.http, |res| {
+                    res.kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|mes| {
+                            mes.ephemeral(true)
+                                .content("You do not have permission to use this command")
+                        })
+                })
+                .await
+                .unwrap();
             return;
         }
 
-        let mut list_id: Option<ListId> = None;
+        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
             if message.is_own(&ctx.cache) {
                 match &message.components[..] {
                     [ActionRow { components: cs, .. }] => {
                         if let ActionRowComponent::Button(b) = &cs[0] {
-                            // hi
                             if b.label.as_ref().unwrap() == "Vote" {
-                                list_id =
-                                    Some(b.custom_id.as_ref().unwrap().parse::<u64>().unwrap());
+                                data = Some((
+                                    b.custom_id.as_ref().unwrap().parse::<u64>().unwrap(),
+                                    message.id,
+                                    message.channel_id,
+                                ));
+                                break;
                             }
                         }
                     }
@@ -1619,39 +1639,80 @@ impl Handler {
             }
         }
 
-        if list_id == None {
-            command.defer(&ctx.http).await.ok();
-            return;
+        if let Some((list_id, message_id, channel_id)) = data {
+            let mut data = ctx.data.write().await;
+            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+            if let Ok(mut x) = db.clone().lock() {
+                if x.remove_proposal(list_id).unwrap() {
+                    println!("removing from db");
+                    x.remove_list(list_id).unwrap();
+                } else {
+                    println!("proposal inactive");
+                    // update embed
+                    return;
+                }
+            }
+
+            let mut embed = CreateEmbed::default();
+            embed.title("Voting cancelled");
+
+            channel_id
+                .edit_message(&ctx.http, message_id, |prev| {
+                    prev.components(|c| c).set_embed(embed)
+                })
+                .await
+                .unwrap();
         }
-        let list_id = list_id.unwrap();
-
-        let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
-
-        if let Ok(mut x) = db.clone().lock() {
-            x.remove_proposal(list_id).unwrap();
-            x.remove_list(list_id).unwrap();
-        }
-
-        let mut embed = CreateEmbed::default();
-        embed.title("Voting cancelled");
-
         command
-            .edit_original_interaction_response(&ctx.http, |prev| {
-                prev.components(|c| c).set_embed(embed)
+            .create_interaction_response(&ctx.http, |res| {
+                res.kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|mes| {
+                        mes.ephemeral(true)
+                            .content("Check the original proposal message for results.")
+                    })
             })
             .await
-            .ok();
+            .unwrap();
     }
 
-    //TODO: periodic checks
+    async fn check_proposals(ctx: &Context) {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
+
+        if let Ok(mut x) = db.clone().lock() {
+            for (list_id, guild_id) in x.get_bot_proposals().unwrap() {
+                let (_, vote_timeout, vote_threshold) =
+                    x.get_propose_settings(GuildId(guild_id)).unwrap();
+                let (votes, timestamp) = x.get_proposal_data(list_id).unwrap();
+                //TODO: update message - infeasible =(
+                if votes >= vote_threshold {
+                    x.accept_proposal(list_id).unwrap();
+                } else if timestamp + vote_timeout <= now {
+                    x.remove_proposal(list_id).unwrap();
+                    x.remove_list(list_id).unwrap();
+                }
+            }
+        }
+    }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let (votes, timestamp) = x.get_proposal_data(list_id).unwrap();
             let guild_id = x.get_list_guild(list_id).unwrap();
+
+            let (votes, timestamp) = match x.get_proposal_data(list_id) {
+                Some(a) => a,
+                None => {
+                    return if x.list_exists(list_id) {
+                        ProposalStatus::ACCEPTED
+                    } else {
+                        ProposalStatus::REMOVED
+                    }
+                }
+            };
             let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id).unwrap();
             if votes >= vote_threshold {
                 x.accept_proposal(list_id).unwrap();
@@ -1668,36 +1729,6 @@ impl Handler {
         ProposalStatus::ACTIVE
     }
 
-    async fn autocomplete_proposal(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
-        const SUGGESTIONS: usize = 5;
-        let mut filter = "";
-        for field in &autocomplete.data.options {
-            if field.focused {
-                filter = field.value.as_ref().unwrap().as_str().unwrap();
-            }
-        }
-        let mut aliases: Vec<String> = Vec::new();
-
-        let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
-        if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_proposals_by_search(guild_id, 0, SUGGESTIONS, filter)
-                .unwrap();
-        }
-        //todo: update proposal embed
-        autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
-            .await
-            .unwrap();
-    }
-
     async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id = command.guild_id.unwrap();
         let mut data = ctx.data.write().await;
@@ -1709,6 +1740,9 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let (_, timeout, threshold) = x.get_propose_settings(guild_id).unwrap();
             let proposals = x.get_proposals(guild_id).unwrap();
+            if proposals.len() == 0 {
+                embed.title("No proposals found");
+            }
             for (name, timestamp, list_id) in proposals {
                 let (votes, _) = x.get_proposal_data(list_id).unwrap();
                 let minutes = (timeout - (now - timestamp)) / 60;
@@ -1740,41 +1774,41 @@ impl Handler {
         ctx: &Context,
     ) {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
-        let list_names: Vec<String>;
         {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
             if let Ok(mut x) = db.clone().lock() {
-                list_names = x.get_list_names(list_id).unwrap();
                 x.vote_proposal(list_id, component.user.id).unwrap();
             } else {
                 panic!("database access error");
             }
         }
+        let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
             ProposalStatus::ACCEPTED => {
-                component
-                    .channel_id
-                    .send_message(&ctx.http, |message| {
-                        message.content(format!("Proposal for list {} accepted", list_names[0]))
-                    })
-                    .await
-                    .unwrap();
+                embed.description("Proposal accepted");
             }
             ProposalStatus::DENIED => {
-                component
-                    .channel_id
-                    .send_message(&ctx.http, |message| {
-                        message.content(format!("Proposal for list {} timed out", list_names[0]))
-                    })
-                    .await
-                    .unwrap();
+                embed.description("Proposal expired");
+            }
+            ProposalStatus::REMOVED => {
+                embed.description("Proposal not found");
             }
             ProposalStatus::ACTIVE => {
                 component.defer(&ctx.http).await.unwrap();
+                return;
             }
         }
-        component.defer(&ctx).await.unwrap();
+        component
+            .create_interaction_response(&ctx.http, |res| {
+                res.kind(InteractionResponseType::UpdateMessage)
+                    .interaction_response_data(|data| {
+                        data.set_embed(embed)
+                            .set_components(serenity::builder::CreateComponents::default())
+                    })
+            })
+            .await
+            .unwrap();
     }
 
     async fn check_triggers(
@@ -2227,7 +2261,7 @@ impl EventHandler for Handler {
                 "kick" => self.handle_kick(&command, &ctx).await,
                 "remove_alias" => self.handle_remove_alias(&command, &ctx).await,
                 "configure" => self.handle_configure(&command, &ctx).await,
-                "cancel_proposal" => self.handle_cancel_proposal(&command, &ctx).await,
+                "Cancel proposal" => self.handle_cancel_proposal(&command, &ctx).await,
                 "log_purge" => self.handle_log_purge(&command, &ctx).await,
                 "list_auto_responses" => self.handle_list_auto_response(&command, &ctx).await,
                 "add_auto_response" | "remove_auto_response" => {
@@ -2241,7 +2275,6 @@ impl EventHandler for Handler {
         } else if let Interaction::Autocomplete(completable) = interaction {
             match completable.data.name.as_str() {
                 "ping" => self.autocomplete_ping(&completable, &ctx).await,
-                "cancel_proposal" => self.autocomplete_proposal(&completable, &ctx).await,
                 "configure" => self.autocomplete_configure(&completable, &ctx).await,
                 "alias" => self.autocomplete_alias(&completable, &ctx).await,
                 "remove_alias" => self.autocomplete_alias(&completable, &ctx).await,
@@ -2376,6 +2409,20 @@ impl EventHandler for Handler {
             guild_commands::add_all_application_commands(&mut guild.id, &ctx).await;
         }
     }
+
+    async fn cache_ready<'life0>(&'life0 self, ctx: Context, _guilds: Vec<GuildId>) {
+        let ctx = Arc::new(ctx);
+        if !self.is_loop_running.load(Ordering::Relaxed) {
+            let ctx1 = Arc::clone(&ctx);
+            tokio::spawn(async move {
+                loop {
+                    Handler::check_proposals(&ctx1).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
+            self.is_loop_running.swap(true, Ordering::Relaxed);
+        }
+    }
 }
 
 #[tokio::main]
@@ -2389,6 +2436,9 @@ async fn main() {
         RUN,
         IMPORT,
     }
+
+    dotenv().ok();
+
     let args = env::args();
     let mut parse_type = ParseType::SCANNING;
     let mut program_target = ProgramTarget::RUN;
@@ -2431,7 +2481,9 @@ async fn main() {
         .parse()
         .expect("application id is not a valid id");
 
-    let handler = Handler;
+    let handler = Handler {
+        is_loop_running: AtomicBool::default(),
+    };
 
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::GUILD_MEMBERS
@@ -2454,6 +2506,7 @@ async fn main() {
         };
         data.insert::<DB>(bot_data);
     }
+
     // Finally, start a single shard, and start listening to events.
     //
     // Shards will automatically attempt to reconnect, and will perform

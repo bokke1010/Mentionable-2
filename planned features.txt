@@ -17,6 +17,7 @@ Medium priority, you can expect these in the initial release:
   x proposal form, including description?
   o Automatic logging for a channel / role.
   v user exceptions
+  x union / intersect multipings?
 
 Low priority, often either complicated or less useful:
   x list groups / collections?
