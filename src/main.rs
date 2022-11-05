@@ -1768,8 +1768,6 @@ impl Handler {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let guild_id = x.get_list_guild(list_id).unwrap();
-
             let (votes, timestamp) = match x.get_proposal_data(list_id) {
                 Some(a) => a,
                 None => {
@@ -1780,6 +1778,7 @@ impl Handler {
                     }
                 }
             };
+            let guild_id = x.get_list_guild(list_id).unwrap();
             let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id).unwrap();
             if votes >= vote_threshold {
                 x.accept_proposal(list_id);
@@ -1812,7 +1811,7 @@ impl Handler {
             }
             for (name, timestamp, list_id) in proposals {
                 let (votes, _) = x.get_proposal_data(list_id).unwrap();
-                let minutes = (timeout - (now - timestamp)) / 60;
+                let minutes = (timeout as i64 - (now - timestamp) as i64) / 60;
                 let (hours, minutes) = (minutes / 60, minutes % 60);
                 embed.field(
                     name,
