@@ -1,4 +1,4 @@
-use crate::structures::{ListId, PingList, LOGCONDITION, LOGTRIGGER, PERMISSION};
+use crate::structures::{ListId, PingList, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION};
 use rusqlite::{named_params, params, Connection, Error, OptionalExtension, Result};
 use serenity::model::id::*;
 
@@ -166,16 +166,6 @@ impl Database {
             .db
             .execute("DELETE FROM lists WHERE id = ?1", params![list_id])?
             > 0)
-    }
-
-    pub fn list_exists(&mut self, list_id: ListId) -> bool {
-        self.db
-            .query_row(
-                "SELECT EXISTS (SELECT id FROM lists WHERE id=?1)",
-                params![list_id],
-                |row| row.get::<usize, bool>(0),
-            )
-            .expect("Unexpected database error when checking membership existance")
     }
 
     //List config
@@ -444,16 +434,6 @@ impl Database {
     }
     // List memberships
 
-    pub fn has_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
-        self.db
-            .query_row(
-                "SELECT EXISTS (SELECT id FROM memberships WHERE user_id=?1 AND list_id=?2)",
-                params![member_id.as_u64(), list_id],
-                |row| row.get::<usize, bool>(0),
-            )
-            .expect("Unexpected database error when checking membership existance")
-    }
-
     pub fn get_lists_with_member(
         &mut self,
         guild_id: GuildId,
@@ -501,12 +481,11 @@ impl Database {
         }
     }
 
-    pub fn remove_member(&mut self, member_id: UserId, list_id: ListId) -> Result<(), Error> {
-        self.db.execute(
+    pub fn remove_member(&mut self, member_id: UserId, list_id: ListId) -> Result<bool, Error> {
+        Ok(self.db.execute(
             "DELETE FROM memberships WHERE user_id = ?1 AND list_id = ?2",
             params![member_id.as_u64(), list_id],
-        )?;
-        Ok(())
+        )? > 0)
     }
     //ANCHOR role functions
 
@@ -810,9 +789,7 @@ impl Database {
         Ok(())
     }
 
-    // pub fn update_proposal()
-
-    pub fn get_proposal_data(&mut self, list_id: ListId) -> Option<(usize, u64)> {
+    pub fn get_proposal_data(&mut self, list_id: ListId) -> ProposalStatus {
         let votes = self.get_members_in_list(list_id).len();
         let timestamp = self
             .db
@@ -824,9 +801,9 @@ impl Database {
             .optional()
             .unwrap();
         if let Some(timestamp) = timestamp {
-            return Some((votes, timestamp));
+            return ProposalStatus::ACTIVE(list_id, votes, timestamp);
         }
-        None
+        ProposalStatus::REMOVED
     }
 
     pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
@@ -844,39 +821,53 @@ impl Database {
             > 0)
     }
 
-    pub fn get_proposals(&mut self, guild_id: GuildId) -> Result<Vec<(String, u64, u64)>, Error> {
-        let lists_query = "SELECT alias.name, proposals.timestamp, lists.id \
-                FROM lists, alias, proposals \
-                WHERE lists.guild_id = :guid \
-                AND alias.list_id = lists.id \
-                AND lists.id = proposals.list_id \
-                ORDER BY alias.name ASC";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(named_params! { ":guid": guild_id.as_u64() })?;
-
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push((
-                row.get::<usize, String>(0)?,
-                row.get::<usize, u64>(1)?,
-                row.get::<usize, u64>(2)?,
-            ));
-        }
-        Ok(lists)
+    pub fn get_proposals(&mut self, guild_id: GuildId) -> Vec<(String, ProposalStatus)> {
+        let lists_query = "SELECT alias.name, lists.id, proposals.timestamp, ( \
+                        SELECT COUNT(memberships.user_id) \
+                        FROM memberships \
+                        WHERE memberships.list_id = lists.id \
+                    )\
+                    FROM proposals \
+                    INNER JOIN lists ON proposals.list_id=lists.id \
+                    INNER JOIN alias ON alias.list_id=lists.id \
+                    WHERE lists.guild_id = ?1
+                    GROUP BY lists.id";
+        let mut stmt = self.db.prepare(lists_query).unwrap();
+        stmt.query_map(params![guild_id.as_u64()], |mf| {
+            Ok((
+                mf.get(0)?,
+                ProposalStatus::ACTIVE(mf.get(1)?, mf.get(3)?, mf.get(2)?),
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        // let lists_query = "SELECT alias.name, proposals.timestamp, lists.id \
+        //         FROM lists, alias, proposals \
+        //         WHERE lists.guild_id = :guid \
+        //         AND alias.list_id = lists.id \
+        //         AND lists.id = proposals.list_id \
+        //         ORDER BY alias.name ASC";
     }
 
-    pub fn get_bot_proposals(&mut self) -> Result<Vec<(u64, u64)>, Error> {
-        let lists_query = "SELECT lists.id, lists.guild_id \
-                FROM lists, proposals \
-                WHERE lists.id = proposals.list_id";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(params![])?;
-
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push((row.get::<usize, u64>(0)?, row.get::<usize, u64>(1)?));
-        }
-        Ok(lists)
+    pub fn get_bot_proposals(&mut self) -> Vec<(GuildId, ProposalStatus)> {
+        let lists_query = "SELECT lists.guild_id, lists.id, proposals.timestamp, ( \
+                        SELECT COUNT(memberships.user_id) \
+                        FROM memberships \
+                        WHERE memberships.list_id = lists.id \
+                    )\
+                    FROM proposals \
+                    INNER JOIN lists ON proposals.list_id=lists.id";
+        let mut stmt = self.db.prepare(lists_query).unwrap();
+        stmt.query_map(params![], |mf| {
+            Ok((
+                GuildId(mf.get(0)?),
+                ProposalStatus::ACTIVE(mf.get(1)?, mf.get(3)?, mf.get(2)?),
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
     }
 
     //ANCHOR: responding functions

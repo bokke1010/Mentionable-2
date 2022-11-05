@@ -37,7 +37,7 @@ use std::{
 use dotenv::dotenv;
 
 mod structures;
-use structures::{ListId, LOGCONDITION, LOGTRIGGER, PERMISSION};
+use structures::{ListId, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION};
 
 mod guild_commands;
 
@@ -65,13 +65,6 @@ enum ListInvalidReasons {
     ListRestrictPing,
     DoesNotExist,
     RoleRestrictPing,
-}
-
-enum ProposalStatus {
-    ACCEPTED,
-    ACTIVE,
-    DENIED,
-    REMOVED,
 }
 
 /*
@@ -421,16 +414,13 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let get_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Ok(Some(list_id)) = get_list_id {
-                if !x.has_member(member_id, list_id) {
-                    return false;
-                }
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
                     return false;
                 }
-                x.remove_member(member_id, list_id)
+                return x
+                    .remove_member(member_id, list_id)
                     .expect("Failed to remove membership.");
-                return true;
             }
         }
         return false;
@@ -534,11 +524,11 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
-                Ok(Some(_)) => content = "This list already exists.".to_string(),
+                Ok(Some(_)) => content = "\nThis list already exists.".to_string(),
                 Ok(None) => {
                     x.add_list(guild_id, &list_name.to_string())
                         .expect("list creation failed");
-                    content += "Created list.";
+                    content += "\nCreated list.";
                     ()
                 }
                 a => {
@@ -1508,7 +1498,11 @@ impl Handler {
     async fn handle_propose(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.unwrap();
         let channel_id = command.channel_id;
-        let name = command.data.options[0].value.as_ref().unwrap().to_string();
+        let name = match command.data.options[0].resolved.as_ref().unwrap() {
+            CommandDataOptionValue::String(a) => a,
+            _ => panic!("invalid argument for propose"),
+        };
+
         let mut proposal_id: Option<u64> = None;
         let as_admin = Handler::can_manage_messages(command);
         let member = command.member.as_ref().unwrap();
@@ -1540,7 +1534,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, &name, timestamp).unwrap();
+                proposal_id = x.start_proposal(guild_id, name, timestamp).unwrap();
                 if proposal_id != None {
                     x.vote_proposal(proposal_id.unwrap(), member.user.id)
                         .unwrap();
@@ -1616,7 +1610,6 @@ impl Handler {
                 .unwrap();
             return;
         }
-
         let mut data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
@@ -1643,19 +1636,15 @@ impl Handler {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
+            let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
                 if x.remove_proposal(list_id).unwrap() {
-                    println!("removing from db");
                     x.remove_list(list_id).unwrap();
+                    embed.title("Voting cancelled");
                 } else {
-                    println!("proposal inactive");
-                    // update embed
-                    return;
+                    embed.title("Proposal inactive or approved");
                 }
             }
-
-            let mut embed = CreateEmbed::default();
-            embed.title("Voting cancelled");
 
             channel_id
                 .edit_message(&ctx.http, message_id, |prev| {
@@ -1717,12 +1706,14 @@ impl Handler {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
-            if let Ok(mut x) = db.clone().lock() {
-                x.accept_proposal(list_id);
-            }
-
             let mut embed = CreateEmbed::default();
-            embed.title("Proposal acccepted");
+            if let Ok(mut x) = db.clone().lock() {
+                if x.accept_proposal(list_id) {
+                    embed.title("Proposal acccepted");
+                } else {
+                    embed.title("Proposal already accepted / removed");
+                }
+            }
 
             channel_id
                 .edit_message(&ctx.http, message_id, |prev| {
@@ -1749,16 +1740,16 @@ impl Handler {
         let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
 
         if let Ok(mut x) = db.clone().lock() {
-            for (list_id, guild_id) in x.get_bot_proposals().unwrap() {
-                let (_, vote_timeout, vote_threshold) =
-                    x.get_propose_settings(GuildId(guild_id)).unwrap();
-                let (votes, timestamp) = x.get_proposal_data(list_id).unwrap();
-                //TODO: update message - infeasible =(
-                if votes >= vote_threshold {
-                    x.accept_proposal(list_id);
-                } else if timestamp + vote_timeout <= now {
-                    x.remove_proposal(list_id).unwrap();
-                    x.remove_list(list_id).unwrap();
+            for (guild_id, proposal) in x.get_bot_proposals() {
+                if let ProposalStatus::ACTIVE(list_id, votes, timestamp) = proposal {
+                    let (_, vote_timeout, vote_threshold) =
+                        x.get_propose_settings(guild_id).unwrap();
+                    if votes >= vote_threshold {
+                        x.accept_proposal(list_id);
+                    } else if timestamp + vote_timeout <= now {
+                        x.remove_proposal(list_id).unwrap();
+                        x.remove_list(list_id).unwrap();
+                    }
                 }
             }
         }
@@ -1768,31 +1759,26 @@ impl Handler {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let (votes, timestamp) = match x.get_proposal_data(list_id) {
-                Some(a) => a,
-                None => {
-                    return if x.list_exists(list_id) {
-                        ProposalStatus::ACCEPTED
-                    } else {
-                        ProposalStatus::REMOVED
+            match x.get_proposal_data(list_id) {
+                ProposalStatus::ACTIVE(_, votes, timestamp) => {
+                    let guild_id = x.get_list_guild(list_id).unwrap();
+                    let (_, vote_timeout, vote_threshold) =
+                        x.get_propose_settings(guild_id).unwrap();
+                    let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
+                    if votes >= vote_threshold {
+                        x.accept_proposal(list_id);
+                        return ProposalStatus::ACCEPTED(list_id);
+                    } else if timestamp + vote_timeout <= now {
+                        x.remove_proposal(list_id).unwrap();
+                        x.remove_list(list_id).unwrap();
+                        return ProposalStatus::DENIED;
                     }
+                    return ProposalStatus::ACTIVE(list_id, votes, timestamp);
                 }
+                a => return a,
             };
-            let guild_id = x.get_list_guild(list_id).unwrap();
-            let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id).unwrap();
-            if votes >= vote_threshold {
-                x.accept_proposal(list_id);
-                return ProposalStatus::ACCEPTED;
-            } else {
-                let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
-                if timestamp + vote_timeout <= now {
-                    x.remove_proposal(list_id).unwrap();
-                    x.remove_list(list_id).unwrap();
-                    return ProposalStatus::DENIED;
-                }
-            }
         }
-        ProposalStatus::ACTIVE
+        panic!("could not get db access");
     }
 
     async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -1805,22 +1791,23 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             let (_, timeout, threshold) = x.get_propose_settings(guild_id).unwrap();
-            let proposals = x.get_proposals(guild_id).unwrap();
+            let proposals = x.get_proposals(guild_id);
             if proposals.len() == 0 {
                 embed.title("No proposals found");
             }
-            for (name, timestamp, list_id) in proposals {
-                let (votes, _) = x.get_proposal_data(list_id).unwrap();
-                let minutes = (timeout as i64 - (now - timestamp) as i64) / 60;
-                let (hours, minutes) = (minutes / 60, minutes % 60);
-                embed.field(
-                    name,
-                    format!(
-                        "Has {} / {} votes, {} hours and {} minutes remaining.",
-                        votes, threshold, hours, minutes,
-                    ),
-                    true,
-                );
+            for (name, proposal) in proposals {
+                if let ProposalStatus::ACTIVE(_, votes, timestamp) = proposal {
+                    let minutes = (timeout as i64 - (now - timestamp) as i64) / 60;
+                    let (hours, minutes) = (minutes / 60, minutes % 60);
+                    embed.field(
+                        name,
+                        format!(
+                            "Has {} / {} votes, {} hours and {} minutes remaining.",
+                            votes, threshold, hours, minutes,
+                        ),
+                        true,
+                    );
+                }
             }
         }
 
@@ -1851,7 +1838,7 @@ impl Handler {
         }
         let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
-            ProposalStatus::ACCEPTED => {
+            ProposalStatus::ACCEPTED(..) => {
                 embed.description("Proposal accepted");
             }
             ProposalStatus::DENIED => {
@@ -1860,7 +1847,7 @@ impl Handler {
             ProposalStatus::REMOVED => {
                 embed.description("Proposal not found");
             }
-            ProposalStatus::ACTIVE => {
+            ProposalStatus::ACTIVE(..) => {
                 component.defer(&ctx.http).await.unwrap();
                 return;
             }
@@ -2341,14 +2328,12 @@ impl EventHandler for Handler {
             };
         } else if let Interaction::Autocomplete(completable) = interaction {
             match completable.data.name.as_str() {
-                "ping" => self.autocomplete_ping(&completable, &ctx).await,
+                "ping" | "remove" => self.autocomplete_ping(&completable, &ctx).await,
                 "configure" => self.autocomplete_configure(&completable, &ctx).await,
                 "alias" => self.autocomplete_alias(&completable, &ctx).await,
                 "remove_alias" => self.autocomplete_alias(&completable, &ctx).await,
-                "join" => self.autocomplete_join(&completable, &ctx).await,
-                "leave" => self.autocomplete_leave(&completable, &ctx).await,
-                "add" => self.autocomplete_join(&completable, &ctx).await,
-                "kick" => self.autocomplete_leave(&completable, &ctx).await,
+                "add" | "join" => self.autocomplete_join(&completable, &ctx).await,
+                "kick" | "leave" => self.autocomplete_leave(&completable, &ctx).await,
                 _ => (),
             }
         } else if let Interaction::MessageComponent(component) = interaction {
@@ -2363,7 +2348,7 @@ impl EventHandler for Handler {
                 "list" => self.list_page_from_component(&component, &ctx).await,
                 "propose" => self.propose_vote_from_component(&component, &ctx).await,
                 "log_purge" => self.process_log_purge(&component, &ctx).await,
-                _ => println!("{:?}", &component),
+                _ => println!("Unknown interaction: {:?}", &component), // remove eventually?
             }
         } else if let Interaction::ModalSubmit(modal) = interaction {
             modal

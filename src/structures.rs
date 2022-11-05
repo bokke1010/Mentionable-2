@@ -117,3 +117,10 @@ impl LOGCONDITION {
         }
     }
 }
+
+pub enum ProposalStatus {
+    ACTIVE(ListId, usize, u64), // votes, timestamp
+    ACCEPTED(ListId),
+    DENIED,
+    REMOVED,
+}

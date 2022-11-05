@@ -84,6 +84,7 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 .name("name")
                                 .description("the name of the list to remove")
                                 .kind(CommandOptionType::String)
+                                .set_autocomplete(true)
                                 .required(true)
                         })
                 })
