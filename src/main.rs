@@ -1676,6 +1676,73 @@ impl Handler {
             .unwrap();
     }
 
+    async fn handle_accept_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+        if !Handler::can_manage_messages(command) {
+            command
+                .create_interaction_response(&ctx.http, |res| {
+                    res.kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|mes| {
+                            mes.ephemeral(true)
+                                .content("You do not have permission to use this command")
+                        })
+                })
+                .await
+                .unwrap();
+            return;
+        }
+
+        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
+
+        for (_, message) in &command.data.resolved.messages {
+            if message.is_own(&ctx.cache) {
+                match &message.components[..] {
+                    [ActionRow { components: cs, .. }] => {
+                        if let ActionRowComponent::Button(b) = &cs[0] {
+                            if b.label.as_ref().unwrap() == "Vote" {
+                                data = Some((
+                                    b.custom_id.as_ref().unwrap().parse::<u64>().unwrap(),
+                                    message.id,
+                                    message.channel_id,
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+
+        if let Some((list_id, message_id, channel_id)) = data {
+            let mut data = ctx.data.write().await;
+            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+
+            if let Ok(mut x) = db.clone().lock() {
+                x.accept_proposal(list_id);
+            }
+
+            let mut embed = CreateEmbed::default();
+            embed.title("Proposal acccepted");
+
+            channel_id
+                .edit_message(&ctx.http, message_id, |prev| {
+                    prev.components(|c| c).set_embed(embed)
+                })
+                .await
+                .unwrap();
+        }
+        command
+            .create_interaction_response(&ctx.http, |res| {
+                res.kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|mes| {
+                        mes.ephemeral(true)
+                            .content("Check the original proposal message for results.")
+                    })
+            })
+            .await
+            .unwrap();
+    }
+
     async fn check_proposals(ctx: &Context) {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
@@ -1688,7 +1755,7 @@ impl Handler {
                 let (votes, timestamp) = x.get_proposal_data(list_id).unwrap();
                 //TODO: update message - infeasible =(
                 if votes >= vote_threshold {
-                    x.accept_proposal(list_id).unwrap();
+                    x.accept_proposal(list_id);
                 } else if timestamp + vote_timeout <= now {
                     x.remove_proposal(list_id).unwrap();
                     x.remove_list(list_id).unwrap();
@@ -1715,7 +1782,7 @@ impl Handler {
             };
             let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id).unwrap();
             if votes >= vote_threshold {
-                x.accept_proposal(list_id).unwrap();
+                x.accept_proposal(list_id);
                 return ProposalStatus::ACCEPTED;
             } else {
                 let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
@@ -2262,6 +2329,7 @@ impl EventHandler for Handler {
                 "remove_alias" => self.handle_remove_alias(&command, &ctx).await,
                 "configure" => self.handle_configure(&command, &ctx).await,
                 "Cancel proposal" => self.handle_cancel_proposal(&command, &ctx).await,
+                "Accept proposal" => self.handle_accept_proposal(&command, &ctx).await,
                 "log_purge" => self.handle_log_purge(&command, &ctx).await,
                 "list_auto_responses" => self.handle_list_auto_response(&command, &ctx).await,
                 "add_auto_response" | "remove_auto_response" => {

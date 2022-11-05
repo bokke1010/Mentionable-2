@@ -792,14 +792,17 @@ impl Database {
 
     // pub fn proposal_refe
 
-    pub fn accept_proposal(&mut self, list_id: ListId) -> Result<(), Error> {
+    pub fn accept_proposal(&mut self, list_id: ListId) -> bool {
         // let transaction = self.db.transaction().unwrap();
-        self.set_pingable(list_id, PERMISSION::ALLOW).unwrap();
-        self.set_joinable(list_id, PERMISSION::ALLOW).unwrap();
-        self.set_visible(list_id, true).unwrap();
-        self.remove_proposal(list_id).unwrap();
+        if self.remove_proposal(list_id).unwrap() {
+            self.set_pingable(list_id, PERMISSION::ALLOW).unwrap();
+            self.set_joinable(list_id, PERMISSION::ALLOW).unwrap();
+            self.set_visible(list_id, true).unwrap();
+            true
+        } else {
+            false
+        }
         // transaction.commit();
-        Ok(())
     }
 
     pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {

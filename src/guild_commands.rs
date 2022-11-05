@@ -243,6 +243,12 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                         .default_member_permissions(can_manage_messages)
                         .kind(CommandType::Message)
                 })
+                .create_application_command(|command| { // Only if proposals are enabled
+                    command
+                        .name("Accept proposal")
+                        .default_member_permissions(can_manage_messages)
+                        .kind(CommandType::Message)
+                })
                 .create_application_command(|command| { // mod only
                     command
                         .name("add")
