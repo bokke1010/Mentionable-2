@@ -177,7 +177,7 @@ impl Handler {
                 let list_name = list_name.value.unwrap();
                 let list_name = list_name.as_str().unwrap();
 
-                if let Ok(Some(list_id)) = x.get_list_id_by_name(list_name, guild_id) {
+                if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
                     let (mut list_cooldown, _, list_restrict_ping) =
                         x.get_list_permissions(list_id);
@@ -215,6 +215,10 @@ impl Handler {
                 content = format!("Mentioning {} members:\n", members.len());
                 for member in members {
                     content += format!("<@{}>, ", member).as_str();
+                    if content.len() > 1940 {
+                        Handler::send_text(&content, command, ctx).await;
+                        content.clear();
+                    }
                 }
             } else {
                 content += "These lists are empty.";
@@ -387,7 +391,7 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
-            if let Ok(Some(list_id)) = res_list_id {
+            if let Some(list_id) = res_list_id {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
                     return false;
@@ -412,8 +416,7 @@ impl Handler {
         let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
 
         if let Ok(mut x) = db.clone().lock() {
-            let get_list_id = x.get_list_id_by_name(list_name, guild_id);
-            if let Ok(Some(list_id)) = get_list_id {
+            if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
                     return false;
@@ -523,17 +526,10 @@ impl Handler {
         let mut content = format!("Creating list {}.", list_name);
 
         if let Ok(mut x) = db.clone().lock() {
-            match x.get_list_id_by_name(list_name, guild_id) {
-                Ok(Some(_)) => content = "\nThis list already exists.".to_string(),
-                Ok(None) => {
-                    x.add_list(guild_id, &list_name.to_string())
-                        .expect("list creation failed");
-                    content += "\nCreated list.";
-                    ()
-                }
-                a => {
-                    a.unwrap();
-                }
+            if let Some(_) = x.add_list(guild_id, &list_name.to_string()) {
+                content += "\nCreated list.";
+            } else {
+                content = "\nThis list already exists.".to_string();
             };
         }
 
@@ -566,16 +562,13 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
-                Ok(Some(id)) => {
+                Some(id) => {
                     x.remove_list(id).expect("list removal failed");
                     content = "Removed list.".to_string();
                 }
-                Ok(None) => {
+                None => {
                     content += "List does not exist.";
                     ()
-                }
-                a => {
-                    a.unwrap();
                 }
             };
         }
@@ -623,13 +616,11 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let res_id = x.get_list_id_by_name(list_name, guild_id);
 
-            if let Ok(Some(id)) = res_id {
-                x.add_alias(id, list_alias).unwrap();
+            if let Some(id) = res_id {
+                x.add_alias_inline(id, list_alias);
                 content = format!("Added alias {} to list {}.", list_alias, list_name);
-            } else if Ok(None) == res_id {
-                content = format!("There is no list named {} to alias to.", list_alias);
             } else {
-                res_id.unwrap();
+                content = format!("There is no list named {} to alias to.", list_alias);
             }
         }
 
@@ -659,19 +650,15 @@ impl Handler {
 
         let mut content = String::new();
         if let Ok(mut x) = db.clone().lock() {
-            let res_id = x.get_list_id_by_name(list_name, guild_id);
-
-            if let Ok(Some(id)) = res_id {
+            if let Some(id) = x.get_list_id_by_name(list_name, guild_id) {
                 if x.get_list_names(id).unwrap().len() > 1 {
-                    x.remove_alias(id, list_name).unwrap();
+                    x.remove_alias(None, id, list_name).unwrap();
                     content = format!("Removed alias {}.", list_name);
                 } else {
                     content = format!("You cannot remove the last alias of a list.")
                 }
-            } else if Ok(None) == res_id {
-                content = format!("There is no list named {} to alias to.", list_name);
             } else {
-                res_id.unwrap();
+                content = format!("There is no list named {} to alias to.", list_name);
             }
         }
 
@@ -1025,7 +1012,7 @@ impl Handler {
             match subcom {
                 CommandDataOption { ref name, .. } if name == "show" => {
                     let (a, b, c) = x.get_guild_ping_data(guild_id);
-                    let (d, e, f) = x.get_propose_settings(guild_id).unwrap();
+                    let (d, e, f) = x.get_propose_settings(guild_id);
                     embed
                         .color((0, 0, 0))
                         .description("test")
@@ -1218,8 +1205,7 @@ impl Handler {
                 } if name == "list" => {
                     let list_value = options
                         .iter()
-                        .filter(|x| x.name.as_str() == "list")
-                        .next()
+                        .find(|x| x.name.as_str() == "list")
                         .expect("No list argument given")
                         .resolved
                         .as_ref()
@@ -1230,95 +1216,89 @@ impl Handler {
                         } else {
                             panic!("List argument is not valid")
                         };
-                    let list = x
-                        .get_list_id_by_name(list_str, guild_id)
-                        .expect("List not found");
-                    if None == list {
+                    if let Some(list) = x.get_list_id_by_name(list_str, guild_id) {
+                        for setting in options {
+                            match setting.name.as_str() {
+                                "description" => {
+                                    let resolved_value = setting.resolved.as_ref().unwrap();
+                                    if let CommandDataOptionValue::String(ref description) =
+                                        *resolved_value
+                                    {
+                                        x.set_description(list, description);
+                                        embed.field(
+                                            "set description",
+                                            format!("{}", description),
+                                            false,
+                                        );
+                                    } else {
+                                        panic!("The parameter description for configure list is incorrectly configured");
+                                    }
+                                }
+                                "cooldown" => {
+                                    let resolved_value = setting.resolved.as_ref().unwrap();
+                                    if let CommandDataOptionValue::Integer(ref cooldown) =
+                                        *resolved_value
+                                    {
+                                        x.set_cooldown(list, *cooldown);
+                                        embed.field("set cooldown", format!("{}", cooldown), false);
+                                    } else {
+                                        panic!("The parameter cooldown for configure list is incorrectly configured");
+                                    }
+                                }
+                                "allow_join" => {
+                                    let resolved_value = setting.resolved.as_ref().unwrap();
+                                    if let CommandDataOptionValue::Boolean(ref joinable) =
+                                        *resolved_value
+                                    {
+                                        x.set_joinable(
+                                            list,
+                                            if *joinable {
+                                                PERMISSION::NEUTRAL
+                                            } else {
+                                                PERMISSION::DENY
+                                            },
+                                        );
+                                        embed.field("set joinable", format!("{}", joinable), false);
+                                    } else {
+                                        panic!("The parameter allow_join for configure list is incorrectly configured");
+                                    }
+                                }
+                                "allow_ping" => {
+                                    let resolved_value = setting.resolved.as_ref().unwrap();
+                                    if let CommandDataOptionValue::Boolean(ref pingable) =
+                                        *resolved_value
+                                    {
+                                        x.set_pingable(
+                                            list,
+                                            if *pingable {
+                                                PERMISSION::NEUTRAL
+                                            } else {
+                                                PERMISSION::DENY
+                                            },
+                                        );
+                                        embed.field("allow ping", format!("{}", pingable), false);
+                                    } else {
+                                        panic!("The parameter allow_ping for configure list is incorrectly configured");
+                                    }
+                                }
+                                "show" => {
+                                    let temp = setting.resolved.as_ref().unwrap();
+                                    if let CommandDataOptionValue::Boolean(ref b) = *temp {
+                                        x.set_visible(list, *b);
+                                        embed.field("set visible", format!("{}", b), false);
+                                    } else {
+                                        panic!("The parameter show for configure list is incorrectly configured");
+                                    }
+                                }
+                                _ => (),
+                            }
+                        }
+                    } else {
                         embed.field(
                             "List not found",
                             format!("The list with name {} was not found.", list_str),
                             false,
                         );
-                    }
-                    let list = list.unwrap();
-
-                    for setting in options {
-                        match setting.name.as_str() {
-                            "description" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::String(ref description) =
-                                    *resolved_value
-                                {
-                                    x.set_description(list, description).unwrap();
-                                    embed.field(
-                                        "set description",
-                                        format!("{}", description),
-                                        false,
-                                    );
-                                } else {
-                                    panic!("The parameter description for configure list is incorrectly configured");
-                                }
-                            }
-                            "cooldown" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref cooldown) =
-                                    *resolved_value
-                                {
-                                    x.set_cooldown(list, *cooldown).unwrap();
-                                    embed.field("set cooldown", format!("{}", cooldown), false);
-                                } else {
-                                    panic!("The parameter cooldown for configure list is incorrectly configured");
-                                }
-                            }
-                            "allow_join" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref joinable) =
-                                    *resolved_value
-                                {
-                                    x.set_joinable(
-                                        list,
-                                        if *joinable {
-                                            PERMISSION::NEUTRAL
-                                        } else {
-                                            PERMISSION::DENY
-                                        },
-                                    )
-                                    .unwrap();
-                                    embed.field("set joinable", format!("{}", joinable), false);
-                                } else {
-                                    panic!("The parameter allow_join for configure list is incorrectly configured");
-                                }
-                            }
-                            "allow_ping" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref pingable) =
-                                    *resolved_value
-                                {
-                                    x.set_pingable(
-                                        list,
-                                        if *pingable {
-                                            PERMISSION::NEUTRAL
-                                        } else {
-                                            PERMISSION::DENY
-                                        },
-                                    )
-                                    .unwrap();
-                                    embed.field("allow ping", format!("{}", pingable), false);
-                                } else {
-                                    panic!("The parameter allow_ping for configure list is incorrectly configured");
-                                }
-                            }
-                            "show" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_visible(list, *b).unwrap();
-                                    embed.field("set visible", format!("{}", b), false);
-                                } else {
-                                    panic!("The parameter show for configure list is incorrectly configured");
-                                }
-                            }
-                            _ => (),
-                        }
                     }
                 }
                 CommandDataOption {
@@ -1388,7 +1368,7 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref prop_enabled) =
                                     *resolved_value
                                 {
-                                    x.set_guild_canpropose(guild_id, *prop_enabled).unwrap();
+                                    x.set_guild_canpropose(guild_id, *prop_enabled);
                                     embed.field(
                                         "enable proposals",
                                         format!("{}", prop_enabled),
@@ -1400,7 +1380,7 @@ impl Handler {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Integer(ref value) = *resolved_value
                                 {
-                                    x.set_propose_timeout(guild_id, *value as u64).unwrap();
+                                    x.set_propose_timeout(guild_id, *value as u64);
                                     embed.field("proposal timeout", format!("{}", value), false);
                                 }
                             }
@@ -1408,7 +1388,7 @@ impl Handler {
                                 let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Integer(ref value) = *resolved_value
                                 {
-                                    x.set_propose_threshold(guild_id, *value as u64).unwrap();
+                                    x.set_propose_threshold(guild_id, *value as u64);
                                     embed.field("proposal threshold", format!("{}", value), false);
                                 }
                             }
@@ -1514,7 +1494,7 @@ impl Handler {
         let mut override_canpropose: PERMISSION;
 
         if let Ok(mut x) = db.clone().lock() {
-            let (general_propose, ..) = x.get_propose_settings(guild_id).unwrap();
+            let (general_propose, ..) = x.get_propose_settings(guild_id);
 
             override_canpropose = match (as_admin, general_propose) {
                 (true, _) => PERMISSION::ALLOW,
@@ -1534,7 +1514,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, name, timestamp).unwrap();
+                proposal_id = x.start_proposal(guild_id, name, timestamp);
                 if proposal_id != None {
                     x.vote_proposal(proposal_id.unwrap(), member.user.id)
                         .unwrap();
@@ -1742,8 +1722,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             for (guild_id, proposal) in x.get_bot_proposals() {
                 if let ProposalStatus::ACTIVE(list_id, votes, timestamp) = proposal {
-                    let (_, vote_timeout, vote_threshold) =
-                        x.get_propose_settings(guild_id).unwrap();
+                    let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
                     if votes >= vote_threshold {
                         x.accept_proposal(list_id);
                     } else if timestamp + vote_timeout <= now {
@@ -1762,8 +1741,7 @@ impl Handler {
             match x.get_proposal_data(list_id) {
                 ProposalStatus::ACTIVE(_, votes, timestamp) => {
                     let guild_id = x.get_list_guild(list_id).unwrap();
-                    let (_, vote_timeout, vote_threshold) =
-                        x.get_propose_settings(guild_id).unwrap();
+                    let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
                     let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
                     if votes >= vote_threshold {
                         x.accept_proposal(list_id);
@@ -1790,7 +1768,7 @@ impl Handler {
         let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
 
         if let Ok(mut x) = db.clone().lock() {
-            let (_, timeout, threshold) = x.get_propose_settings(guild_id).unwrap();
+            let (_, timeout, threshold) = x.get_propose_settings(guild_id);
             let proposals = x.get_proposals(guild_id);
             if proposals.len() == 0 {
                 embed.title("No proposals found");
@@ -1836,6 +1814,9 @@ impl Handler {
                 panic!("database access error");
             }
         }
+
+        let old_embed = &component.message.embeds[0];
+
         let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
             ProposalStatus::ACCEPTED(..) => {
@@ -1847,8 +1828,29 @@ impl Handler {
             ProposalStatus::REMOVED => {
                 embed.description("Proposal not found");
             }
-            ProposalStatus::ACTIVE(..) => {
-                component.defer(&ctx.http).await.unwrap();
+            ProposalStatus::ACTIVE(_, votes, _) => {
+                embed.author(|ab| {
+                    ab.icon_url(
+                        old_embed
+                            .author
+                            .as_ref()
+                            .unwrap()
+                            .icon_url
+                            .as_ref()
+                            .unwrap(),
+                    )
+                    .name(&old_embed.author.as_ref().unwrap().name)
+                });
+                embed.title(old_embed.title.as_ref().unwrap());
+                embed.description(format!("Votes: {}", votes));
+
+                component
+                    .create_interaction_response(&ctx.http, |res| {
+                        res.kind(InteractionResponseType::UpdateMessage)
+                            .interaction_response_data(|data| data.set_embed(embed))
+                    })
+                    .await
+                    .unwrap();
                 return;
             }
         }

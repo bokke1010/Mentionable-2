@@ -193,7 +193,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
     }
 
     fn db_parse_restrictproposal(db: &mut Database, guild_id: GuildId, content_val: &Value) {
-        db.set_guild_canpropose(guild_id, false).unwrap();
+        db.set_guild_canpropose(guild_id, false);
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
@@ -269,7 +269,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
 
     fn db_parse_proposal_timeout(db: &mut Database, guild_id: GuildId, content_val: &Value) {
         if let Value::I64(timeout) = content_val {
-            db.set_propose_timeout(guild_id, *timeout as u64).unwrap();
+            db.set_propose_timeout(guild_id, *timeout as u64);
         } else {
             panic!("err");
         }
@@ -277,8 +277,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
 
     fn db_parse_proposal_threshold(db: &mut Database, guild_id: GuildId, content_val: &Value) {
         if let Value::I64(threshold) = content_val {
-            db.set_propose_threshold(guild_id, *threshold as u64)
-                .unwrap();
+            db.set_propose_threshold(guild_id, *threshold as u64);
         } else {
             panic!("err");
         }
@@ -311,9 +310,11 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                             ("noping", Value::Bool(b)) => {
                                 noping = *b;
                             }
-                            ("pingdelay", Value::I64(i)) => db.set_cooldown(list_id, *i).unwrap(),
+                            ("pingdelay", Value::I64(i)) => {
+                                db.set_cooldown(list_id, *i);
+                            }
                             ("description", Value::String(s)) => {
-                                db.set_description(list_id, &s).unwrap()
+                                db.set_description(list_id, &s);
                             }
                             _ => panic!("err"),
                         }
@@ -322,10 +323,10 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                     }
                 }
                 if noping {
-                    db.set_joinable(list_id, PERMISSION::DENY).unwrap();
+                    db.set_joinable(list_id, PERMISSION::DENY);
                 }
                 if nojoin {
-                    db.set_pingable(list_id, PERMISSION::DENY).unwrap();
+                    db.set_pingable(list_id, PERMISSION::DENY);
                 }
                 for member_val in members {
                     if let HashableValue::I64(member_id) = member_val {

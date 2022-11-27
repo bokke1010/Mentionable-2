@@ -149,14 +149,22 @@ impl Database {
     }
 
     //ANCHOR List functions
-    pub fn add_list(&mut self, guild_id: GuildId, name: &str) -> Result<ListId, Error> {
-        self.db.execute(
-            "INSERT INTO lists (guild_id) VALUES (?1)",
-            params![guild_id.as_u64()],
-        )?;
-        let list_id = self.db.last_insert_rowid() as u64;
-        self.add_alias(list_id, name)?;
-        Ok(list_id)
+    pub fn add_list(&mut self, guild_id: GuildId, name: &str) -> Option<ListId> {
+        let tx = self.db.transaction().unwrap();
+        let suc = tx
+            .execute(
+                "INSERT INTO lists (guild_id) VALUES (?1);",
+                params![guild_id.as_u64()],
+            )
+            .unwrap();
+        if suc == 0 {
+            tx.finish().unwrap();
+            return None;
+        }
+        let list_id = tx.last_insert_rowid() as u64;
+        Database::add_alias(&tx, list_id, name);
+        tx.commit().unwrap();
+        Some(list_id)
     }
 
     pub fn remove_list(&mut self, list_id: ListId) -> Result<bool, Error> {
@@ -169,47 +177,61 @@ impl Database {
     }
 
     //List config
-    pub fn set_pingable(&mut self, list_id: ListId, pingable: PERMISSION) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE lists SET ping_permission = ?1 WHERE id = ?2",
-            params![pingable as u64, list_id],
-        )?;
-        Ok(())
+    pub fn set_pingable(&mut self, list_id: ListId, pingable: PERMISSION) -> bool {
+        self.db
+            .execute(
+                "UPDATE lists SET ping_permission = ?1 WHERE id = ?2",
+                params![pingable as u64, list_id],
+            )
+            .unwrap()
+            > 0
     }
 
-    pub fn set_joinable(&mut self, list_id: ListId, joinable: PERMISSION) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE lists SET join_permission = ?1 WHERE id = ?2",
-            params![joinable as u64, list_id],
-        )?;
-        Ok(())
+    pub fn set_joinable(&mut self, list_id: ListId, joinable: PERMISSION) -> bool {
+        self.db
+            .execute(
+                "UPDATE lists SET join_permission = ?1 WHERE id = ?2",
+                params![joinable as u64, list_id],
+            )
+            .unwrap()
+            > 0
     }
 
-    pub fn set_visible(&mut self, list_id: ListId, visible: bool) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE lists SET visible = ?1 WHERE id = ?2",
-            params![visible, list_id],
-        )?;
-        Ok(())
+    pub fn set_visible(&mut self, list_id: ListId, visible: bool) -> bool {
+        self.db
+            .execute(
+                "UPDATE lists SET visible = ?1 WHERE id = ?2",
+                params![visible, list_id],
+            )
+            .unwrap()
+            > 0
     }
 
-    pub fn set_description(&mut self, list_id: ListId, value: &str) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE lists SET description = ?1 WHERE id = ?2",
-            params![value, list_id],
-        )?;
-        Ok(())
+    pub fn set_description(&mut self, list_id: ListId, value: &str) -> bool {
+        self.db
+            .execute(
+                "UPDATE lists SET description = ?1 WHERE id = ?2",
+                params![value, list_id],
+            )
+            .unwrap()
+            > 0
     }
-    pub fn set_cooldown(&mut self, list_id: ListId, value: i64) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE lists SET cooldown = ?1 WHERE id = ?2",
-            params![value, list_id],
-        )?;
-        Ok(())
+    pub fn set_cooldown(&mut self, list_id: ListId, value: i64) -> bool {
+        self.db
+            .execute(
+                "UPDATE lists SET cooldown = ?1 WHERE id = ?2",
+                params![value, list_id],
+            )
+            .unwrap()
+            > 0
     }
 
-    pub fn add_alias(&mut self, list_id: ListId, name: &str) -> Result<bool, Error> {
-        match self.db.execute(
+    pub fn add_alias_inline(&self, list_id: ListId, name: &str) -> bool {
+        Database::add_alias(&self.db, list_id, name)
+    }
+
+    pub fn add_alias(db: &Connection, list_id: ListId, name: &str) -> bool {
+        match db.execute(
             "INSERT INTO alias (list_id, name) VALUES (?1, ?2)",
             params![list_id, name],
         ) {
@@ -219,14 +241,20 @@ impl Database {
                     extended_code: 2067,
                 },
                 _,
-            )) => Ok(false), // Unique constraint violation, alias already exists for this list
-            Err(a) => Err(a),
-            Ok(_) => Ok(true),
+            )) => false, // Unique constraint violation, alias already exists for this list
+            Ok(_) => true,
+            Err(a) => Err(a).unwrap(),
         }
     }
 
-    pub fn remove_alias(&mut self, list_id: ListId, name: &str) -> Result<(), Error> {
-        self.db.execute(
+    pub fn remove_alias(
+        &mut self,
+        db: Option<&Connection>,
+        list_id: ListId,
+        name: &str,
+    ) -> Result<(), Error> {
+        let db = db.unwrap_or(&self.db);
+        db.execute(
             "DELETE FROM alias WHERE list_id = ?1 AND name = ?2",
             params![list_id, name],
         )?;
@@ -265,15 +293,11 @@ impl Database {
             .unwrap()
     }
 
-    pub fn get_list_id_by_name(
-        &mut self,
-        list_name: &str,
-        guild_id: GuildId,
-    ) -> Result<Option<ListId>, Error> {
+    pub fn get_list_id_by_name(&mut self, list_name: &str, guild_id: GuildId) -> Option<ListId> {
         self.db.query_row(
                 "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
                 params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
-            ).optional()
+            ).optional().unwrap()
     }
 
     pub fn get_list_names(&mut self, list_id: ListId) -> Result<Vec<String>, Error> {
@@ -707,31 +731,34 @@ impl Database {
 
     // Configuration
 
-    pub fn set_guild_canpropose(&mut self, guild_id: GuildId, value: bool) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE guilds SET general_propose = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_guild_canpropose(&mut self, guild_id: GuildId, value: bool) -> () {
+        self.db
+            .execute(
+                "UPDATE guilds SET general_propose = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )
+            .unwrap();
     }
 
-    pub fn set_propose_timeout(&mut self, guild_id: GuildId, value: u64) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE guilds SET propose_timeout = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_propose_timeout(&mut self, guild_id: GuildId, value: u64) -> () {
+        self.db
+            .execute(
+                "UPDATE guilds SET propose_timeout = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )
+            .unwrap();
     }
 
-    pub fn set_propose_threshold(&mut self, guild_id: GuildId, value: u64) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE guilds SET propose_threshold = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_propose_threshold(&mut self, guild_id: GuildId, value: u64) -> () {
+        self.db
+            .execute(
+                "UPDATE guilds SET propose_threshold = ?1 WHERE id = ?2",
+                params![value, guild_id.as_u64()],
+            )
+            .unwrap();
     }
 
-    pub fn get_propose_settings(&self, guild_id: GuildId) -> Result<(bool, u64, usize), Error> {
+    pub fn get_propose_settings(&self, guild_id: GuildId) -> (bool, u64, usize) {
         self.db.query_row(
             "SELECT general_propose, propose_timeout, propose_threshold FROM guilds WHERE id = ?1",
             params![guild_id.as_u64()],
@@ -742,7 +769,7 @@ impl Database {
                     row.get::<usize, usize>(2)?,
                 ))
             },
-        )
+        ).unwrap()
     }
 
     // Usage functions
@@ -752,21 +779,22 @@ impl Database {
         guild_id: GuildId,
         name: &String,
         timestamp: i64,
-    ) -> Result<Option<ListId>, Error> {
+    ) -> Option<ListId> {
         // let transaction = self.db.transaction().unwrap();
-        if let Ok(Some(_)) = self.get_list_id_by_name(name, guild_id) {
-            return Ok(None);
+        if let Some(list_id) = self.add_list(guild_id, name) {
+            self.set_pingable(list_id, PERMISSION::DENY);
+            self.set_joinable(list_id, PERMISSION::DENY);
+            self.set_visible(list_id, false);
+            self.db
+                .execute(
+                    "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
+                    params![list_id, timestamp],
+                )
+                .unwrap();
+            return Some(list_id);
         }
-        let list_id = self.add_list(guild_id, name).unwrap();
-        self.set_pingable(list_id, PERMISSION::DENY).unwrap();
-        self.set_joinable(list_id, PERMISSION::DENY).unwrap();
-        self.set_visible(list_id, false).unwrap();
-        self.db.execute(
-            "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
-            params![list_id, timestamp],
-        )?;
+        None
         // transaction.commit();
-        Ok(Some(list_id))
     }
 
     // pub fn proposal_refe
@@ -774,9 +802,9 @@ impl Database {
     pub fn accept_proposal(&mut self, list_id: ListId) -> bool {
         // let transaction = self.db.transaction().unwrap();
         if self.remove_proposal(list_id).unwrap() {
-            self.set_pingable(list_id, PERMISSION::ALLOW).unwrap();
-            self.set_joinable(list_id, PERMISSION::ALLOW).unwrap();
-            self.set_visible(list_id, true).unwrap();
+            self.set_pingable(list_id, PERMISSION::ALLOW);
+            self.set_joinable(list_id, PERMISSION::ALLOW);
+            self.set_visible(list_id, true);
             true
         } else {
             false
@@ -842,12 +870,6 @@ impl Database {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap()
-        // let lists_query = "SELECT alias.name, proposals.timestamp, lists.id \
-        //         FROM lists, alias, proposals \
-        //         WHERE lists.guild_id = :guid \
-        //         AND alias.list_id = lists.id \
-        //         AND lists.id = proposals.list_id \
-        //         ORDER BY alias.name ASC";
     }
 
     pub fn get_bot_proposals(&mut self) -> Vec<(GuildId, ProposalStatus)> {
