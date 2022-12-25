@@ -8,17 +8,27 @@ pub struct Database {
 
 impl Database {
     // ANCHOR Initialization
-    pub fn new(database_path: &str) -> Result<Database, Error> {
-        let conn = Connection::open(database_path)?;
+    pub fn new(database_path: &str) -> Database {
+        let conn = Connection::open(database_path).expect("Invalid path or SQL open failure");
+
+        match conn.query_row("PRAGMA user_version", [], |row| row.get(0)) {
+            Ok(1) => println!("Current db version"),
+            Ok(_) => {
+                println!("Unknown database version, likely from a future release, aborting");
+                panic!("Unsupported DB version")
+            }
+            Err(_) => println!("Creating new database"),
+        }
 
         let mut database = Database { db: conn };
-        database.init_tables()?;
+        database.init_tables();
 
-        Ok(database)
+        database
     }
 
-    fn init_tables(&mut self) -> Result<(), Error> {
-        let statement = "PRAGMA foreign_keys = ON;\n\
+    fn init_tables(&mut self) -> () {
+        let statement = "PRAGMA user_version = 1; \n\
+            PRAGMA foreign_keys = ON;\n\
             CREATE TABLE IF NOT EXISTS guilds ( \
                 id                  INTEGER PRIMARY KEY NOT NULL, \
                 general_canping     INTEGER DEFAULT 1 CHECK( general_canping = 0 OR general_canping = 1 ) , \
@@ -81,7 +91,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS proposals ( \
                 list_id             INTEGER PRIMARY KEY REFERENCES lists(id), \
                 timestamp           INTEGER NOT NULL );";
-        self.db.execute_batch(statement)
+        self.db.execute_batch(statement).expect("Malformed SQL")
     }
 
     //ANCHOR Guild setup
@@ -300,16 +310,19 @@ impl Database {
             ).optional().unwrap()
     }
 
-    pub fn get_list_names(&mut self, list_id: ListId) -> Result<Vec<String>, Error> {
-        let mut stmt = self.db.prepare(
-            "SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND alias.list_id=lists.id",
-        )?;
-        let mut rows = stmt.query(params![list_id])?;
-        let mut names = Vec::new();
-        while let Some(row) = rows.next()? {
-            names.push(row.get::<usize, String>(0)?);
-        }
-        Ok(names)
+    pub fn get_list_names(&mut self, list_id: ListId) -> Vec<String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT alias.name FROM lists, alias WHERE lists.id=?1 AND alias.list_id=lists.id",
+            )
+            .expect("Malformed sql");
+        let rows = stmt
+            .query_map(params![list_id], |row| row.get::<usize, String>(0))
+            .expect("Error binding parameters");
+
+        rows.collect::<Result<Vec<String>, _>>()
+            .expect("Element is not string or index is incorrect")
     }
 
     pub fn get_lists_by_search(
@@ -372,7 +385,7 @@ impl Database {
         amount: usize,
         filter: &str,
         show_all: bool,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Vec<String> {
         let lists_query = "SELECT alias.name \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
@@ -381,16 +394,14 @@ impl Database {
                 AND (NOT lists.ping_permission = :permissiondeny OR :show_all)
                 ORDER BY alias.name ASC \
                 LIMIT :start, :amt";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64 }
-            )?;
+        let mut stmt = self.db.prepare(lists_query).unwrap(); // Sql should be correct
+        let rows = stmt.query_map(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64 },
+                |row| row.get::<usize, String>(0)
+            ).unwrap(); // fails if parameters don't bind (sql wrong)
 
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push(row.get::<usize, String>(0)?);
-        }
-        Ok(lists)
+        rows.collect::<Result<Vec<String>, _>>()
+            .expect("Element is not string or index is incorrect")
     }
 
     pub fn get_list_membership_by_search(
@@ -400,7 +411,7 @@ impl Database {
         amount: usize,
         filter: &str,
         show_all: bool,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Vec<String> {
         let lists_query = "SELECT alias.name \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
@@ -413,16 +424,17 @@ impl Database {
                     AND memberships.list_id = lists.id) \
                 ORDER BY alias.name ASC \
                 LIMIT 0, :amt";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() }
-            )?;
+        let mut stmt = self
+            .db
+            .prepare(lists_query)
+            .expect("Sql statement malformed");
+        let rows = stmt.query_map(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() },
+                |row| row.get::<usize, String>(0)
+            ).expect("Error binding parameters");
 
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push(row.get::<usize, String>(0)?);
-        }
-        Ok(lists)
+        rows.collect::<Result<Vec<String>, _>>()
+            .expect("Element is not string or index is incorrect")
     }
 
     pub fn get_list_joinable_by_search(
@@ -432,7 +444,7 @@ impl Database {
         amount: usize,
         filter: &str,
         show_all: bool,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Vec<String> {
         let lists_query = "SELECT alias.name \
                 FROM lists, alias \
                 WHERE lists.guild_id=:guid \
@@ -445,16 +457,14 @@ impl Database {
                     AND memberships.list_id = lists.id) \
                 ORDER BY alias.name ASC \
                 LIMIT 0, :amt";
-        let mut stmt = self.db.prepare(lists_query)?;
-        let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() }
-            )?;
+        let mut stmt = self.db.prepare(lists_query).expect("Sql query malformed");
+        let rows = stmt.query_map(
+                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() },
+                |row| row.get::<usize, String>(0)
+            ).expect("Unable to bind parameters to query");
 
-        let mut lists = Vec::new();
-        while let Some(row) = rows.next()? {
-            lists.push(row.get::<usize, String>(0)?);
-        }
-        Ok(lists)
+        rows.collect::<Result<Vec<String>, _>>()
+            .expect("Element is not string or index is incorrect")
     }
     // List memberships
 
@@ -480,7 +490,7 @@ impl Database {
         rows.collect::<Result<Vec<u64>, _>>().unwrap()
     }
 
-    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> Result<bool, Error> {
+    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
         let a = self.db.execute(
             "INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)",
             params![member_id.as_u64(), list_id],
@@ -492,16 +502,16 @@ impl Database {
                     extended_code: 2067, // Constraint violation, already got this membership
                 },
                 _,
-            )) => Ok(false), // Already in list
+            )) => false, // Already in list
             Err(Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: _,
                     extended_code: 787,
                 },
                 _,
-            )) => Ok(false), // list not found
-            Err(b) => Err(b),
-            Ok(_) => Ok(true),
+            )) => false, // list not found
+            Err(b) => Err(b).expect("Unexpected sql error"),
+            Ok(_) => true,
         }
     }
 
@@ -591,7 +601,7 @@ impl Database {
         guild_id: GuildId,
         user_id: UserId,
     ) -> (PERMISSION, PERMISSION, bool) {
-        self.ensure_user_present(guild_id, user_id).unwrap();
+        self.ensure_user_present(guild_id, user_id);
         self.db
                 .query_row(
                     "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM user_settings WHERE user_id=?1 AND guild_id=?2",
@@ -607,103 +617,84 @@ impl Database {
                 .unwrap()
     }
 
-    fn ensure_user_present(&mut self, guild_id: GuildId, user_id: UserId) -> Result<(), Error> {
-        self.db.execute(
-            "INSERT OR IGNORE INTO user_settings (guild_id, user_id) VALUES (?1, ?2)",
-            [guild_id.as_u64(), user_id.as_u64()],
-        )?;
-        Ok(())
+    fn ensure_user_present(&mut self, guild_id: GuildId, user_id: UserId) -> () {
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO user_settings (guild_id, user_id) VALUES (?1, ?2)",
+                [guild_id.as_u64(), user_id.as_u64()],
+            )
+            .expect("malformed Sql");
     }
 
-    pub fn set_user_propose(
-        &mut self,
-        guild_id: GuildId,
-        user_id: UserId,
-        perm: PERMISSION,
-    ) -> Result<(), Error> {
-        self.ensure_user_present(guild_id, user_id)?;
-        self.db.execute(
-            "UPDATE user_settings SET propose_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-            params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_user_propose(&mut self, guild_id: GuildId, user_id: UserId, perm: PERMISSION) -> () {
+        self.ensure_user_present(guild_id, user_id);
+        self.db
+            .execute(
+                "UPDATE user_settings SET propose_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+            )
+            .expect("SQL statement malformed or SQL error");
     }
 
-    pub fn set_user_canping(
-        &mut self,
-        guild_id: GuildId,
-        user_id: UserId,
-        perm: PERMISSION,
-    ) -> Result<(), Error> {
-        self.ensure_user_present(guild_id, user_id)?;
-        self.db.execute(
-            "UPDATE user_settings SET ping_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-            params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_user_canping(&mut self, guild_id: GuildId, user_id: UserId, perm: PERMISSION) -> () {
+        self.ensure_user_present(guild_id, user_id);
+        self.db
+            .execute(
+                "UPDATE user_settings SET ping_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+            )
+            .expect("SQL statement malformed or SQL error");
     }
 
-    pub fn set_user_cooldown(
-        &mut self,
-        guild_id: GuildId,
-        user_id: UserId,
-        deny: bool,
-    ) -> Result<(), Error> {
-        self.ensure_user_present(guild_id, user_id)?;
-        self.db.execute(
-            "UPDATE user_settings SET ignore_gbcooldown = ?1 WHERE user_id=?2 AND guild_id=?3",
-            params![deny, guild_id.as_u64(), user_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_user_cooldown(&mut self, guild_id: GuildId, user_id: UserId, deny: bool) -> () {
+        self.ensure_user_present(guild_id, user_id);
+        self.db
+            .execute(
+                "UPDATE user_settings SET ignore_gbcooldown = ?1 WHERE user_id=?2 AND guild_id=?3",
+                params![deny, guild_id.as_u64(), user_id.as_u64()],
+            )
+            .expect("SQL statement malformed or SQL error");
     }
 
     //ANCHOR channel functions
 
-    fn ensure_channel_present(&mut self, channel_id: ChannelId) -> Result<(), Error> {
-        self.db.execute(
-            "INSERT OR IGNORE INTO channel_settings (channel_id) VALUES (?1)",
-            [channel_id.as_u64()],
-        )?;
-        Ok(())
+    fn ensure_channel_present(&mut self, channel_id: ChannelId) -> () {
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO channel_settings (channel_id) VALUES (?1)",
+                [channel_id.as_u64()],
+            )
+            .expect("Malformed SQL or sql error: ");
     }
 
-    pub fn set_channel_mentioning(
-        &mut self,
-        channel_id: ChannelId,
-        value: PERMISSION,
-    ) -> Result<(), Error> {
-        self.ensure_channel_present(channel_id)?;
-        self.db.execute(
-            "UPDATE channel_settings SET override_mentioning = ?1 WHERE channel_id = ?2",
-            params![value as u64, channel_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_channel_mentioning(&mut self, channel_id: ChannelId, value: PERMISSION) -> () {
+        self.ensure_channel_present(channel_id);
+        self.db
+            .execute(
+                "UPDATE channel_settings SET override_mentioning = ?1 WHERE channel_id = ?2",
+                params![value as u64, channel_id.as_u64()],
+            )
+            .expect("Malformed SQL or sql error: ");
     }
 
-    pub fn set_channel_proposing(
-        &mut self,
-        channel_id: ChannelId,
-        value: PERMISSION,
-    ) -> Result<(), Error> {
-        self.ensure_channel_present(channel_id)?;
-        self.db.execute(
-            "UPDATE channel_settings SET propose_permission = ?1 WHERE channel_id = ?2",
-            params![value as u64, channel_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_channel_proposing(&mut self, channel_id: ChannelId, value: PERMISSION) -> () {
+        self.ensure_channel_present(channel_id);
+        self.db
+            .execute(
+                "UPDATE channel_settings SET propose_permission = ?1 WHERE channel_id = ?2",
+                params![value as u64, channel_id.as_u64()],
+            )
+            .expect("Malformed SQL or sql error: ");
     }
 
-    pub fn set_channel_public_visible(
-        &mut self,
-        channel_id: ChannelId,
-        value: bool,
-    ) -> Result<(), Error> {
-        self.ensure_channel_present(channel_id)?;
-        self.db.execute(
-            "UPDATE channel_settings SET public_commands = ?1 WHERE channel_id = ?2",
-            params![value, channel_id.as_u64()],
-        )?;
-        Ok(())
+    pub fn set_channel_public_visible(&mut self, channel_id: ChannelId, value: bool) -> () {
+        self.ensure_channel_present(channel_id);
+        self.db
+            .execute(
+                "UPDATE channel_settings SET public_commands = ?1 WHERE channel_id = ?2",
+                params![value, channel_id.as_u64()],
+            )
+            .expect("Malformed SQL or sql error: ");
     }
 
     pub fn get_channel_permissions(
@@ -711,7 +702,7 @@ impl Database {
         _guild_id: GuildId,
         channel_id: ChannelId,
     ) -> (bool, PERMISSION, PERMISSION) {
-        self.ensure_channel_present(channel_id).unwrap();
+        self.ensure_channel_present(channel_id);
         self.db
                 .query_row(
                     "SELECT public_commands, override_mentioning, propose_permission FROM channel_settings WHERE channel_id=?1",
@@ -812,9 +803,8 @@ impl Database {
         // transaction.commit();
     }
 
-    pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> Result<(), Error> {
-        self.add_member(member_id, list_id)?;
-        Ok(())
+    pub fn vote_proposal(&mut self, list_id: ListId, member_id: UserId) -> () {
+        self.add_member(member_id, list_id);
     }
 
     pub fn get_proposal_data(&mut self, list_id: ListId) -> ProposalStatus {
@@ -944,11 +934,7 @@ impl Database {
         Ok(self.db.last_insert_rowid() as u64)
     }
 
-    pub fn has_response(
-        &mut self,
-        guild_id: GuildId,
-        log_type: LOGTRIGGER,
-    ) -> Result<Option<u64>, Error> {
+    pub fn has_response(&mut self, guild_id: GuildId, log_type: LOGTRIGGER) -> Option<u64> {
         match log_type {
                 LOGTRIGGER::RoleAdd(role_id) | LOGTRIGGER::RoleRemove(role_id) => {
                     match self.db
@@ -958,9 +944,9 @@ impl Database {
                             |row| row.get(0)
                         )
                     {
-                        Ok(id) => Ok(Some(id)),
-                        Result::Err(Error::QueryReturnedNoRows) => Ok(None),
-                        Result::Err(er) => Err(er)
+                        Ok(id) => Some(id),
+                        Result::Err(Error::QueryReturnedNoRows) => None,
+                        Result::Err(er) => Err(er).expect("SQL malformed or runtime error: ")
                     }
                 },
                 LOGTRIGGER::JoinServer() => {
@@ -971,9 +957,9 @@ impl Database {
                         |row| row.get(0)
                     )
                 {
-                    Ok(id) => Ok(Some(id)),
-                    Result::Err(Error::QueryReturnedNoRows) => Ok(None),
-                    Result::Err(er) => Err(er)
+                    Ok(id) => Some(id),
+                    Result::Err(Error::QueryReturnedNoRows) => None,
+                    Result::Err(er) => Err(er).expect("SQL malformed or runtime error: ")
                 }
                 }
             }
@@ -1031,7 +1017,7 @@ impl Database {
         log_id: u64,
         log_type: LOGCONDITION,
         invert: bool,
-    ) -> Result<(), Error> {
+    ) -> () {
         match log_type {
             LOGCONDITION::HasRole(role_id) => {
                 self.db.execute(
@@ -1042,35 +1028,41 @@ impl Database {
                             role_id.as_u64(),
                             invert
                         ],
-                    )?;
+                    ).expect("Invalid SQL or sql error: ");
             }
         }
-        Ok(())
     }
 
-    pub fn remove_response_condition(&mut self, condition_id: u64) -> Result<(), Error> {
-        self.db.execute(
-            "DELETE FROM action_response_condition WHERE id = ?1",
-            params![condition_id,],
-        )?;
-        Ok(())
+    pub fn remove_response_condition(&mut self, condition_id: u64) -> () {
+        self.db
+            .execute(
+                "DELETE FROM action_response_condition WHERE id = ?1",
+                params![condition_id,],
+            )
+            .expect("Invalid SQL or sql error: ");
     }
 
-    pub fn get_response_conditions(
-        &self,
-        log_id: u64,
-    ) -> Result<Vec<(LOGCONDITION, bool, u64)>, Error> {
+    pub fn get_response_conditions(&self, log_id: u64) -> Vec<(LOGCONDITION, bool, u64)> {
         let mut stmt = self.db.prepare(
             "SELECT type, acomp_id, invert, id FROM action_response_condition WHERE rolelogID = ?1",
-        )?;
-        let mut rows = stmt.query(params![log_id])?;
+        ).expect("Malformed SQL");
+        let mut rows = stmt
+            .query(params![log_id])
+            .expect("Failed to bind parameters");
         let mut conditions = Vec::new();
-        while let Some(row) = rows.next()? {
-            let (logtype, id) = (row.get::<usize, u64>(0)?, row.get::<usize, u64>(1)?);
+        while let Some(row) = rows.next().expect("Error aquiring next row") {
+            let (logtype, id) = (
+                row.get::<usize, u64>(0).unwrap(),
+                row.get::<usize, u64>(1).unwrap(),
+            );
             let cond = LOGCONDITION::fromint(logtype, id);
-            conditions.push((cond, row.get::<usize, bool>(2)?, row.get::<usize, u64>(3)?));
+            conditions.push((
+                cond,
+                row.get::<usize, bool>(2).unwrap(),
+                row.get::<usize, u64>(3).unwrap(),
+            ));
         }
-        Ok(conditions)
+        conditions
     }
     //ANCHOR: log purge functions
 

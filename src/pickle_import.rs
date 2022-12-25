@@ -105,8 +105,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                                             log_id,
                                             LOGCONDITION::HasRole(RoleId(*restr_role_id as u64)),
                                             hr == "notHasRole",
-                                        )
-                                        .unwrap();
+                                        );
                                     } else {
                                         panic!("err");
                                     }
@@ -219,8 +218,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                                     db.set_channel_mentioning(
                                         ChannelId(*cid as u64),
                                         PERMISSION::DENY,
-                                    )
-                                    .unwrap();
+                                    );
                                 } else {
                                     panic!("err");
                                 }
@@ -234,8 +232,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                                     db.set_channel_proposing(
                                         ChannelId(*cid as u64),
                                         PERMISSION::DENY,
-                                    )
-                                    .unwrap();
+                                    );
                                 } else {
                                     panic!("err");
                                 }
@@ -330,7 +327,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                 }
                 for member_val in members {
                     if let HashableValue::I64(member_id) = member_val {
-                        db.add_member(UserId(*member_id as u64), list_id).unwrap();
+                        db.add_member(UserId(*member_id as u64), list_id);
                     } else {
                         panic!("err");
                     }

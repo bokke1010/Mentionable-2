@@ -82,14 +82,18 @@ struct Handler {
 
 impl Handler {
     fn can_manage_messages(command: &ApplicationCommandInteraction) -> bool {
-        let member = command.member.as_ref().unwrap();
+        let member = command
+            .member
+            .as_ref()
+            .expect("Command not called from guild, permissions not applicable");
         return member
             .permissions
-            .unwrap()
+            .expect("This member reference has to be aquired from an interaction")
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
     }
 
     async fn send_text(text: &str, command: &ApplicationCommandInteraction, ctx: &Context) {
+        // Can fail if message is too long.
         command
             .create_interaction_response(&ctx.http, |response| {
                 response
@@ -97,7 +101,7 @@ impl Handler {
                     .interaction_response_data(|message| message.content(text))
             })
             .await
-            .expect("Failed to send text response.");
+            .expect("Failed to send text response, see error for details.");
     }
 
     async fn send_not_allowed(command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -118,7 +122,10 @@ impl Handler {
     async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let channel_id = command.channel_id;
-        let member = command.member.as_ref().unwrap();
+        let member = command
+            .member
+            .as_ref()
+            .expect("/ping not called from guild");
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
@@ -132,7 +139,9 @@ impl Handler {
             database: db,
             global,
             local,
-        } = data.get_mut::<DB>().unwrap();
+        } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         let timestamp = serenity::model::Timestamp::now().unix_timestamp() as u64;
         if let Ok(mut x) = db.clone().lock() {
             let mut override_canping = if member_admin {
@@ -174,8 +183,12 @@ impl Handler {
             }
 
             for list_name in list_names {
-                let list_name = list_name.value.unwrap();
-                let list_name = list_name.as_str().unwrap();
+                let list_name = list_name
+                    .value
+                    .expect("Invalid /ping definition, should not be subcommand");
+                let list_name = list_name
+                    .as_str()
+                    .expect("Invalid /ping definition, should be string type");
 
                 if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
@@ -257,27 +270,35 @@ impl Handler {
     async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
         let guild_id = autocomplete.guild_id.expect("No guild data found");
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete.member.as_ref().unwrap();
+        let member = autocomplete
+            .member
+            .as_ref()
+            .expect("/ping used outside guild");
         let member_admin = member
             .permissions
-            .unwrap()
+            .expect("member reference did not originate from interaction")
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
 
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.focused && field.kind == CommandOptionType::String {
-                filter = field.value.as_ref().unwrap().as_str().unwrap();
+                filter = field
+                    .value
+                    .as_ref()
+                    .expect("/ping definition incorrect, should not contain subcommands")
+                    .as_str()
+                    .expect("This must be a string");
             }
         }
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
-                .unwrap();
+            aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
         }
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
@@ -287,41 +308,53 @@ impl Handler {
                 response
             })
             .await
-            .unwrap();
+            .expect("Failure communicating with discord api");
     }
 
     async fn autocomplete_join(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
         let guild_id = autocomplete.guild_id.expect("No guild data found");
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete.member.as_ref().unwrap();
+        let member = autocomplete
+            .member
+            .as_ref()
+            .expect("/join was not triggered from within a guild");
         let member_admin = member
             .permissions
-            .unwrap()
+            .expect("member reference does not originate from interaction")
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
         let mut userid = member.user.id;
 
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.kind == CommandOptionType::User {
-                let resolved_value = field.resolved.as_ref().unwrap();
+                let resolved_value = field
+                    .resolved
+                    .as_ref()
+                    .expect("user field does not contain value?");
                 userid = match resolved_value {
                     CommandDataOptionValue::User(ref target, _) => target.id,
                     _ => panic!("Invalid argument type"),
                 };
             }
             if field.focused && field.kind == CommandOptionType::String {
-                filter = field.value.as_ref().unwrap().as_str().unwrap();
+                filter = field
+                    .value
+                    .as_ref()
+                    .expect("Filter field does not contain value?")
+                    .as_str()
+                    .expect("string could not be interpreted as string");
             }
         }
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_list_joinable_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin)
-                .unwrap();
+            aliases =
+                x.get_list_joinable_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin);
         }
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
@@ -331,13 +364,16 @@ impl Handler {
                 response
             })
             .await
-            .unwrap();
+            .expect("Discord api error as follows: ");
     }
 
     async fn autocomplete_leave(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
         let guild_id = autocomplete.guild_id.expect("No guild data found");
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete.member.as_ref().unwrap();
+        let member = autocomplete
+            .member
+            .as_ref()
+            .expect("/leave called outside guild");
         let member_admin = member
             .permissions
             .unwrap()
@@ -347,24 +383,34 @@ impl Handler {
         let mut filter = "";
         for field in &autocomplete.data.options {
             if field.kind == CommandOptionType::User {
-                let id_string = field.value.as_ref().unwrap();
+                let id_string = field.value.as_ref().expect("Field does not contain value");
                 userid = UserId {
-                    0: id_string.as_str().unwrap().parse::<u64>().unwrap(),
+                    0: id_string
+                        .as_str()
+                        .expect("userid cannot be parsed as string")
+                        .parse::<u64>()
+                        .expect("id string cannot be parsed as u64"),
                 };
             }
             if field.focused && field.kind == CommandOptionType::String {
-                filter = field.value.as_ref().unwrap().as_str().unwrap();
+                filter = field.value.as_ref().unwrap().as_str().unwrap(); // okay if it contains a string
             }
         }
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_list_membership_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin)
-                .unwrap();
+            aliases = x.get_list_membership_by_search(
+                guild_id,
+                userid,
+                SUGGESTIONS,
+                filter,
+                member_admin,
+            );
         }
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
@@ -386,7 +432,9 @@ impl Handler {
         ctx: &Context,
     ) -> bool {
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         // member_admin = Handler::can_manage_messages(command);
 
         if let Ok(mut x) = db.clone().lock() {
@@ -396,9 +444,7 @@ impl Handler {
                 if restricted_join && !as_admin {
                     return false;
                 }
-                return x
-                    .add_member(member_id, list_id)
-                    .expect("Failed to add member to list");
+                return x.add_member(member_id, list_id);
             }
         }
         return false;
@@ -413,7 +459,9 @@ impl Handler {
         ctx: &Context,
     ) -> bool {
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
             if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
@@ -521,7 +569,9 @@ impl Handler {
         }
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut content = format!("Creating list {}.", list_name);
 
@@ -556,7 +606,9 @@ impl Handler {
         }
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut content = format!("Removing list {}.", list_name);
 
@@ -610,7 +662,9 @@ impl Handler {
             return;
         }
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut content = String::new();
         if let Ok(mut x) = db.clone().lock() {
@@ -646,12 +700,14 @@ impl Handler {
             return;
         }
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut content = String::new();
         if let Ok(mut x) = db.clone().lock() {
             if let Some(id) = x.get_list_id_by_name(list_name, guild_id) {
-                if x.get_list_names(id).unwrap().len() > 1 {
+                if x.get_list_names(id).len() > 1 {
                     x.remove_alias(None, id, list_name).unwrap();
                     content = format!("Removed alias {}.", list_name);
                 } else {
@@ -692,12 +748,12 @@ impl Handler {
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, true)
-                .unwrap();
+            aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, true)
         }
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
@@ -720,12 +776,14 @@ impl Handler {
             .id;
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         let mut content = format!("You are in the following lists:");
         if let Ok(mut x) = db.clone().lock() {
             let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
             for list_id in list_ids {
-                let list_names = x.get_list_names(list_id).unwrap();
+                let list_names = x.get_list_names(list_id);
                 content += format!("\n{}", list_names.join(", ")).as_str();
             }
         }
@@ -878,7 +936,7 @@ impl Handler {
                             for list_index in page_start..page_end {
                                 page_selection = (page_start, page_end);
                                 visible_lists.push((
-                                    x.get_list_names(lists[list_index].id).unwrap().join(", "),
+                                    x.get_list_names(lists[list_index].id).join(", "),
                                     lists[list_index].description.clone(),
                                 ));
                             }
@@ -943,7 +1001,7 @@ impl Handler {
     }
 
     async fn handle_list(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.unwrap();
+        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
         let mut page: i64 = 0;
         let mut filter: String = "".to_string();
         for option in command.data.options.iter() {
@@ -1000,14 +1058,14 @@ impl Handler {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
+        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
 
         let mut embed = CreateEmbed::default();
 
         let subcom = &command.data.options[0];
 
         let data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get::<DB>().unwrap();
+        let BotData { database: db, .. } = data.get::<DB>().expect("Cannot find database");
         if let Ok(mut x) = db.clone().lock() {
             match subcom {
                 CommandDataOption { ref name, .. } if name == "show" => {
@@ -1165,7 +1223,7 @@ impl Handler {
                                     *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
-                                    x.set_user_propose(guild_id, user, perm).unwrap();
+                                    x.set_user_propose(guild_id, user, perm);
                                     embed.field(
                                         "disable propose",
                                         format!("Proposal permission: {}", perm),
@@ -1181,7 +1239,7 @@ impl Handler {
                                     *resolved_value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
-                                    x.set_user_canping(guild_id, user, perm).unwrap();
+                                    x.set_user_canping(guild_id, user, perm);
                                     embed.field("Ping permission: ", format!("{}", perm), false);
                                 } else {
                                     panic!("The parameter ping for configure user is incorrectly configured");
@@ -1190,7 +1248,7 @@ impl Handler {
                             "exclude_from_cooldown" => {
                                 let temp = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_user_cooldown(guild_id, user, *b).unwrap();
+                                    x.set_user_cooldown(guild_id, user, *b);
                                     embed.field("user cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
@@ -1209,7 +1267,7 @@ impl Handler {
                         .expect("No list argument given")
                         .resolved
                         .as_ref()
-                        .unwrap();
+                        .expect("Missing resolved value");
                     let list_str: &str =
                         if let CommandDataOptionValue::String(ref list_ref) = *list_value {
                             list_ref.as_str()
@@ -1327,7 +1385,7 @@ impl Handler {
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     embed.field("set mentioning", format!("{}", perm), false);
-                                    x.set_channel_mentioning(channel, perm).unwrap();
+                                    x.set_channel_mentioning(channel, perm);
                                 }
                             }
                             "proposing" => {
@@ -1337,7 +1395,7 @@ impl Handler {
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     embed.field("set proposing", format!("{}", perm), false);
-                                    x.set_channel_proposing(channel, perm).unwrap()
+                                    x.set_channel_proposing(channel, perm);
                                 }
                             }
                             "visible_commands" => {
@@ -1345,8 +1403,7 @@ impl Handler {
                                 if let CommandDataOptionValue::Boolean(ref visible_commands) =
                                     *resolved_value
                                 {
-                                    x.set_channel_public_visible(channel, *visible_commands)
-                                        .unwrap();
+                                    x.set_channel_public_visible(channel, *visible_commands);
                                     embed.field(
                                         "set public commands visible",
                                         format!("{}", visible_commands),
@@ -1437,10 +1494,13 @@ impl Handler {
     async fn autocomplete_configure(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
         let guild_id = autocomplete.guild_id.expect("No guild data found");
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete.member.as_ref().unwrap();
+        let member = autocomplete
+            .member
+            .as_ref()
+            .expect("/configure being used outside guild");
         let member_admin = member
             .permissions
-            .unwrap()
+            .expect("Member reference not from interaction")
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
         let mut filter = "";
         for field in &autocomplete.data.options {
@@ -1455,12 +1515,12 @@ impl Handler {
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            aliases = x
-                .get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
-                .unwrap();
+            aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
         }
         autocomplete
             .create_autocomplete_response(&ctx.http, |response| {
@@ -1476,7 +1536,9 @@ impl Handler {
     async fn handle_invalid(&self, _command: &ApplicationCommandInteraction) {}
 
     async fn handle_propose(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.unwrap();
+        let guild_id: GuildId = command
+            .guild_id
+            .expect("/propose called from outside guild");
         let channel_id = command.channel_id;
         let name = match command.data.options[0].resolved.as_ref().unwrap() {
             CommandDataOptionValue::String(a) => a,
@@ -1485,11 +1547,16 @@ impl Handler {
 
         let mut proposal_id: Option<u64> = None;
         let as_admin = Handler::can_manage_messages(command);
-        let member = command.member.as_ref().unwrap();
+        let member = command
+            .member
+            .as_ref()
+            .expect("Member reference not from interaction");
         let role_ids: &Vec<RoleId> = &member.roles;
 
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut override_canpropose: PERMISSION;
 
@@ -1516,8 +1583,7 @@ impl Handler {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
                 proposal_id = x.start_proposal(guild_id, name, timestamp);
                 if proposal_id != None {
-                    x.vote_proposal(proposal_id.unwrap(), member.user.id)
-                        .unwrap();
+                    x.vote_proposal(proposal_id.unwrap(), member.user.id);
                 }
             }
         } else {
@@ -1614,7 +1680,9 @@ impl Handler {
 
         if let Some((list_id, message_id, channel_id)) = data {
             let mut data = ctx.data.write().await;
-            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            let BotData { database: db, .. } = data
+                .get_mut::<DB>()
+                .expect("Could not find database in bot data");
 
             let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
@@ -1684,7 +1752,9 @@ impl Handler {
 
         if let Some((list_id, message_id, channel_id)) = data {
             let mut data = ctx.data.write().await;
-            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            let BotData { database: db, .. } = data
+                .get_mut::<DB>()
+                .expect("Could not find database in bot data");
 
             let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
@@ -1716,7 +1786,9 @@ impl Handler {
 
     async fn check_proposals(ctx: &Context) {
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
 
         if let Ok(mut x) = db.clone().lock() {
@@ -1736,7 +1808,9 @@ impl Handler {
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         if let Ok(mut x) = db.clone().lock() {
             match x.get_proposal_data(list_id) {
                 ProposalStatus::ACTIVE(_, votes, timestamp) => {
@@ -1762,7 +1836,9 @@ impl Handler {
     async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
         let guild_id = command.guild_id.unwrap();
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
 
         let mut embed = CreateEmbed::default();
         let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
@@ -1807,9 +1883,11 @@ impl Handler {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
         {
             let mut data = ctx.data.write().await;
-            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            let BotData { database: db, .. } = data
+                .get_mut::<DB>()
+                .expect("Could not find database in bot data");
             if let Ok(mut x) = db.clone().lock() {
-                x.vote_proposal(list_id, component.user.id).unwrap();
+                x.vote_proposal(list_id, component.user.id);
             } else {
                 panic!("database access error");
             }
@@ -1834,14 +1912,25 @@ impl Handler {
                         old_embed
                             .author
                             .as_ref()
-                            .unwrap()
+                            .expect("Old proposal embed malformed")
                             .icon_url
                             .as_ref()
-                            .unwrap(),
+                            .expect("Old proposal embed malformed"),
                     )
-                    .name(&old_embed.author.as_ref().unwrap().name)
+                    .name(
+                        &old_embed
+                            .author
+                            .as_ref()
+                            .expect("Old proposal embed malformed")
+                            .name,
+                    )
                 });
-                embed.title(old_embed.title.as_ref().unwrap());
+                embed.title(
+                    old_embed
+                        .title
+                        .as_ref()
+                        .expect("Old proposal embed malformed"),
+                );
                 embed.description(format!("Votes: {}", votes));
 
                 component
@@ -1875,11 +1964,13 @@ impl Handler {
     ) -> Vec<(ChannelId, String)> {
         let mut responses: Vec<(ChannelId, String)> = vec![];
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         if let Ok(mut x) = db.clone().lock() {
             'outer: for trigger in triggers {
-                if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
-                    for condition in x.get_response_conditions(id).unwrap() {
+                if let Some(id) = x.has_response(guild_id, trigger) {
+                    for condition in x.get_response_conditions(id) {
                         if !match condition {
                             (LOGCONDITION::HasRole(role_id), invert, _) => {
                                 member.roles.contains(&role_id) ^ invert
@@ -1973,7 +2064,9 @@ impl Handler {
 
         let guild_id = command.guild_id.unwrap();
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         let mut nls = false;
         if let Ok(x) = db.clone().lock() {
             let so = x.get_log_channel(guild_id).unwrap();
@@ -2058,7 +2151,9 @@ impl Handler {
 
         let guild_id = component.guild_id.unwrap();
         let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
         let res_cid: ChannelId;
         if let Ok(x) = db.clone().lock() {
             let so = x.get_log_channel(guild_id).unwrap();
@@ -2265,19 +2360,19 @@ impl Handler {
             };
 
             let log_condition = LOGCONDITION::HasRole(target_role_id);
-            if let Some(id) = x.has_response(guild_id, trigger).unwrap() {
+            if let Some(id) = x.has_response(guild_id, trigger) {
                 match command.data.name.as_str() {
                     "add_auto_response_condition" => {
-                        x.add_response_condition(id, log_condition, invert).unwrap();
+                        x.add_response_condition(id, log_condition, invert);
                         message = "Succesfully added condition."
                     }
                     "remove_auto_response_condition" => {
-                        let conditions = x.get_response_conditions(id).unwrap();
+                        let conditions = x.get_response_conditions(id);
                         let ind_opt = conditions.iter().position(|(t_log_cond, t_inv, _)| {
                             *t_log_cond == log_condition && *t_inv == invert
                         });
                         if let Some(ind) = ind_opt {
-                            x.remove_response_condition(conditions[ind].2).unwrap();
+                            x.remove_response_condition(conditions[ind].2);
                             message = "Succesfully removed condition";
                         } else {
                             message = "Condition not found"
@@ -2341,7 +2436,7 @@ impl EventHandler for Handler {
         } else if let Interaction::MessageComponent(component) = interaction {
             match component
                 .message
-                .interaction
+                .interaction // we may get modals not spawned by interactions in the future, if so this may fail
                 .as_ref()
                 .unwrap()
                 .name
@@ -2451,7 +2546,9 @@ impl EventHandler for Handler {
 
         {
             let mut data = ctx.data.write().await;
-            let BotData { database: db, .. } = data.get_mut::<DB>().unwrap();
+            let BotData { database: db, .. } = data
+                .get_mut::<DB>()
+                .expect("Could not find database in bot data");
             if let Ok(mut x) = db.clone().lock() {
                 for guild in &ready.guilds {
                     x.add_guild(guild.id).ok();
@@ -2505,7 +2602,9 @@ async fn main() {
                 }
             }
             ParseType::IMPORT => {
-                let mut db = Database::new("database.db").unwrap();
+                // There's a bunch of naive path traversal here, check this again later
+
+                let mut db = Database::new("database.db");
                 let filename = arg.split("/").collect::<Vec<&str>>();
                 let filename = filename.last().unwrap();
                 let filename = filename.split(".").next().unwrap();
@@ -2523,7 +2622,7 @@ async fn main() {
     }
 
     // Load database
-    let database: Database = Database::new("database.db").expect("Database could not be loaded");
+    let database: Database = Database::new("database.db");
     let database = Mutex::new(database);
 
     // Configure the client with your Discord bot token in the environment.
