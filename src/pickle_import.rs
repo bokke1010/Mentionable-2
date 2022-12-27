@@ -374,6 +374,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                     }
                 }
             }
+            println!("Finished parsing");
         }
     }
 

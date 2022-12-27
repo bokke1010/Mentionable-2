@@ -13,3 +13,6 @@ serde = {}
 serde_json = {}
 serde-pickle = { version = "1.1.1" }
 dotenv = "0.15.0"
+
+[build]
+target = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]

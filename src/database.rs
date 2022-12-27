@@ -12,12 +12,16 @@ impl Database {
         let conn = Connection::open(database_path).expect("Invalid path or SQL open failure");
 
         match conn.query_row("PRAGMA user_version", [], |row| row.get(0)) {
-            Ok(1) => println!("Current db version"),
-            Ok(_) => {
-                println!("Unknown database version, likely from a future release, aborting");
-                panic!("Unsupported DB version")
+            Ok(1) => println!("The database was loaded succesfully"),
+            Ok(0) => println!("Created new database"),
+            Ok(v) => {
+                println!(
+                    "Unknown database version {}, likely from a future release, aborting",
+                    v
+                );
+                panic!("Unsupported (likely future) DB version")
             }
-            Err(_) => println!("Creating new database"),
+            Err(e) => Err(e).unwrap(),
         }
 
         let mut database = Database { db: conn };
