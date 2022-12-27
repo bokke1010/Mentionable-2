@@ -2101,7 +2101,7 @@ impl Handler {
             let label = match message.content.len() {
                 0 => "Empty",
                 1..=90 => message.content.as_str(),
-                _ => &message.content[0..30],
+                _ => &message.content[0..50],
             };
             select_menu_options.push(CreateSelectMenuOption::new(label, message.id));
         }
