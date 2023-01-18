@@ -52,8 +52,8 @@ impl PERMISSION {
     pub fn from_str(value: &str) -> Result<PERMISSION, &str> {
         match value {
             "0" | "NEUTRAL" => Ok(PERMISSION::NEUTRAL),
-            "1" | "DENY" => Ok(PERMISSION::NEUTRAL),
-            "2" | "ALLOW" => Ok(PERMISSION::NEUTRAL),
+            "1" | "DENY" => Ok(PERMISSION::DENY),
+            "2" | "ALLOW" => Ok(PERMISSION::ALLOW),
             _ => Err("Invalid string"),
         }
     }
