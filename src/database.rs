@@ -1,4 +1,6 @@
-use crate::structures::{ListId, PingList, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION};
+use crate::structures::{
+    JoinResult, ListId, PingList, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION,
+};
 use rusqlite::{named_params, params, Connection, Error, OptionalExtension, Result};
 use serenity::model::id::*;
 
@@ -494,7 +496,7 @@ impl Database {
         rows.collect::<Result<Vec<u64>, _>>().unwrap()
     }
 
-    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> bool {
+    pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> JoinResult {
         let a = self.db.execute(
             "INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)",
             params![member_id.as_u64(), list_id],
@@ -506,16 +508,16 @@ impl Database {
                     extended_code: 2067, // Constraint violation, already got this membership
                 },
                 _,
-            )) => false, // Already in list
+            )) => JoinResult::ALREADY_MEMBER, // Already in list
             Err(Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: _,
                     extended_code: 787,
                 },
                 _,
-            )) => false, // list not found
+            )) => JoinResult::LIST_DOES_NOT_EXIST, // list not found
             Err(b) => Err(b).expect("Unexpected sql error"),
-            Ok(_) => true,
+            Ok(_) => JoinResult::SUCCES,
         }
     }
 

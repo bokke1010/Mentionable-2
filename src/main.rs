@@ -37,7 +37,7 @@ use std::{
 use dotenv::dotenv;
 
 mod structures;
-use structures::{ListId, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION};
+use structures::{JoinResult, ListId, ProposalStatus, LOGCONDITION, LOGTRIGGER, PERMISSION};
 
 mod guild_commands;
 
@@ -430,7 +430,7 @@ impl Handler {
         member_id: UserId,
         as_admin: bool,
         ctx: &Context,
-    ) -> bool {
+    ) -> JoinResult {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -442,12 +442,14 @@ impl Handler {
             if let Some(list_id) = res_list_id {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
-                    return false;
+                    return JoinResult::MISSING_PERMS;
                 }
                 return x.add_member(member_id, list_id);
+            } else {
+                return JoinResult::LIST_DOES_NOT_EXIST;
             }
         }
-        return false;
+        return JoinResult::BOT_ERROR;
     }
 
     async fn remove_member(
@@ -457,7 +459,7 @@ impl Handler {
         member_id: UserId,
         as_admin: bool,
         ctx: &Context,
-    ) -> bool {
+    ) -> JoinResult {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -467,14 +469,20 @@ impl Handler {
             if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
-                    return false;
+                    return JoinResult::MISSING_PERMS;
                 }
-                return x
-                    .remove_member(member_id, list_id)
-                    .expect("Failed to remove membership.");
+                if x.remove_member(member_id, list_id)
+                    .expect("Failed to remove membership.")
+                {
+                    return JoinResult::SUCCES;
+                } else {
+                    return JoinResult::ALREADY_MEMBER;
+                };
+            } else {
+                return JoinResult::LIST_DOES_NOT_EXIST;
             }
         }
-        return false;
+        return JoinResult::BOT_ERROR;
     }
 
     async fn handle_join(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -488,22 +496,38 @@ impl Handler {
         let member_admin = Handler::can_manage_messages(command);
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
 
-        let mut content = format!(
-            "Attempting to add user with id {} to {} lists:",
-            member_id,
-            list_names.len()
-        );
+        let mut content = format!("Joining the following {} lists:", list_names.len());
 
         for list_name in list_names {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
-            if self
+            match self
                 .add_member(guild_id, list_name_str, member_id, member_admin, ctx)
                 .await
             {
-                content += format!("\nAdded to list {}", list_name_str).as_str();
-            } else {
-                content += format!("\nFailed to add user to list {}", list_name_str).as_str();
+                JoinResult::ALREADY_MEMBER => {
+                    content += format!("\nYou already joined the list {}", list_name_str).as_str();
+                }
+                JoinResult::SUCCES => {
+                    content += format!("\nAdded to list {}", list_name_str).as_str();
+                }
+                JoinResult::LIST_DOES_NOT_EXIST => {
+                    content += format!("\nThe list {} does not exist", list_name_str).as_str();
+                }
+                JoinResult::MISSING_PERMS => {
+                    content += format!(
+                        "\nYou do not have permission to join the list {}.",
+                        list_name_str
+                    )
+                    .as_str();
+                }
+                JoinResult::BOT_ERROR => {
+                    content += format!(
+                        "\nSomething went wrong trying to join the \"{}\" list.",
+                        list_name_str
+                    )
+                    .as_str();
+                }
             }
         }
         Handler::send_text(&content, command, ctx).await;
@@ -529,14 +553,30 @@ impl Handler {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
 
-            if self
+            match self
                 .remove_member(guild_id, list_name_str, member_id, as_admin, ctx)
                 .await
             {
-                content += format!("\nRemoved from list {}", list_name_str).as_str();
-            } else {
-                content +=
-                    format!("\nFailed to remove member from list {}", list_name_str).as_str();
+                JoinResult::SUCCES => {
+                    content += format!("\nRemoved from list {}", list_name_str).as_str();
+                }
+                JoinResult::ALREADY_MEMBER => {
+                    content += format!("\nYou were not in the list {}", list_name_str).as_str();
+                }
+                JoinResult::LIST_DOES_NOT_EXIST => {
+                    content += format!("\nThe list {} does not exist", list_name_str).as_str();
+                }
+                JoinResult::MISSING_PERMS => {
+                    content += format!(
+                        "\nYou do not have permission to leave the list {}",
+                        list_name_str
+                    )
+                    .as_str();
+                }
+                JoinResult::BOT_ERROR => {
+                    content +=
+                        format!("\nFailed to remove member from list {}", list_name_str).as_str();
+                }
             }
         }
         command
@@ -573,13 +613,13 @@ impl Handler {
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
 
-        let mut content = format!("Creating list {}.", list_name);
+        let mut content = "".to_string();
 
         if let Ok(mut x) = db.clone().lock() {
             if let Some(_) = x.add_list(guild_id, &list_name.to_string()) {
-                content += "\nCreated list.";
+                content += format!("Creating list {}.", list_name).as_str();
             } else {
-                content = "\nThis list already exists.".to_string();
+                content += "This list already exists.";
             };
         }
 
@@ -833,13 +873,30 @@ impl Handler {
             };
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
-            if self
+            match self
                 .add_member(guild_id, list_name_str, member_id, true, ctx)
                 .await
             {
-                content += format!("\nAdded to list {}", list_name_str).as_str();
-            } else {
-                content += format!("\nFailed to add user to list {}", list_name_str).as_str();
+                JoinResult::ALREADY_MEMBER => {
+                    content += format!("\nUser was already in list {}", list_name_str).as_str();
+                }
+                JoinResult::SUCCES => {
+                    content += format!("\nAdded to list {}", list_name_str).as_str();
+                }
+                JoinResult::LIST_DOES_NOT_EXIST => {
+                    content += format!("\nList {} does not exist", list_name_str).as_str();
+                }
+                JoinResult::MISSING_PERMS => {
+                    content += format!(
+                        "\nYou do not have permission to add user to list {}.",
+                        list_name_str
+                    )
+                    .as_str();
+                }
+                JoinResult::BOT_ERROR => {
+                    content += format!("\nAn error occured adding user to list {}", list_name_str)
+                        .as_str();
+                }
             }
         }
         Handler::send_text(&content, command, ctx).await;
@@ -880,14 +937,31 @@ impl Handler {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
 
-            if self
+            match self
                 .remove_member(guild_id, list_name_str, member_id, true, ctx)
                 .await
             {
-                content += format!("\nRemoved from list {}", list_name_str).as_str();
-            } else {
-                content +=
-                    format!("\nFailed to remove member from list {}", list_name_str).as_str();
+                JoinResult::SUCCES => {
+                    content += format!("\nRemoved from list {}", list_name_str).as_str();
+                }
+                JoinResult::ALREADY_MEMBER => {
+                    content +=
+                        format!("\nThis person was not in the list {}", list_name_str).as_str();
+                }
+                JoinResult::LIST_DOES_NOT_EXIST => {
+                    content += format!("\nThe list {} does not exist", list_name_str).as_str();
+                }
+                JoinResult::MISSING_PERMS => {
+                    content += format!(
+                        "\nYou do not have permission to remove users from the list {}",
+                        list_name_str
+                    )
+                    .as_str();
+                }
+                JoinResult::BOT_ERROR => {
+                    content +=
+                        format!("\nFailed to remove member from list {}", list_name_str).as_str();
+                }
             }
         }
         command

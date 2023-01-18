@@ -124,3 +124,11 @@ pub enum ProposalStatus {
     DENIED,
     REMOVED,
 }
+
+pub enum JoinResult {
+    SUCCES,
+    ALREADY_MEMBER,
+    LIST_DOES_NOT_EXIST,
+    BOT_ERROR,
+    MISSING_PERMS,
+}
