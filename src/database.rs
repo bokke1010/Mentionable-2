@@ -565,7 +565,7 @@ impl Database {
         self.ensure_role_present(guild_id, role_id)?;
         self.db.execute(
             "UPDATE role_settings SET propose_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![perm as u64, guild_id.as_u64(), role_id.as_u64()],
+            params![perm as u64, role_id.as_u64(), guild_id.as_u64()],
         )?;
         Ok(())
     }
@@ -577,9 +577,10 @@ impl Database {
         perm: PERMISSION,
     ) -> Result<(), Error> {
         self.ensure_role_present(guild_id, role_id)?;
+        println!("got here, perm: {}", perm as u64);
         self.db.execute(
             "UPDATE role_settings SET ping_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![perm as u64, guild_id.as_u64(), role_id.as_u64()],
+            params![perm as u64, role_id.as_u64(), guild_id.as_u64()],
         )?;
         Ok(())
     }
@@ -593,7 +594,7 @@ impl Database {
         self.ensure_role_present(guild_id, role_id)?;
         self.db.execute(
             "UPDATE role_settings SET ignore_gbcooldown = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![deny, guild_id.as_u64(), role_id.as_u64()],
+            params![deny, role_id.as_u64(), guild_id.as_u64()],
         )?;
         Ok(())
     }
@@ -635,7 +636,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET propose_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+                params![perm as u64, user_id.as_u64(), guild_id.as_u64()],
             )
             .expect("SQL statement malformed or SQL error");
     }
@@ -645,7 +646,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET ping_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![perm as u64, guild_id.as_u64(), user_id.as_u64()],
+                params![perm as u64, user_id.as_u64(), guild_id.as_u64()],
             )
             .expect("SQL statement malformed or SQL error");
     }
@@ -655,7 +656,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET ignore_gbcooldown = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![deny, guild_id.as_u64(), user_id.as_u64()],
+                params![deny, user_id.as_u64(), guild_id.as_u64()],
             )
             .expect("SQL statement malformed or SQL error");
     }
