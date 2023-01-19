@@ -92,13 +92,18 @@ impl Handler {
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
     }
 
-    async fn send_text(text: &str, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn send_text(
+        text: &str,
+        command: &ApplicationCommandInteraction,
+        ctx: &Context,
+        ephemeral: bool,
+    ) {
         // Can fail if message is too long.
         command
             .create_interaction_response(&ctx.http, |response| {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
+                    .interaction_response_data(|message| message.content(text).ephemeral(ephemeral))
             })
             .await
             .expect("Failed to send text response, see error for details.");
@@ -155,6 +160,7 @@ impl Handler {
                 x.get_user_permissions(guild_id, member.user.id);
             ignore_cooldown = ignore_cooldown || user_ignore_cooldown;
             override_canping = override_canping.combine(user_canping);
+
             for role_id in role_ids {
                 let (_, role_canping, role_ignore_cooldown) =
                     x.get_role_permissions(guild_id, *role_id);
@@ -164,13 +170,13 @@ impl Handler {
 
             let (general_cooldown, general_canping, pingcooldown) = x.get_guild_ping_data(guild_id);
             let (_, channel_ping_rule, _) = x.get_channel_permissions(guild_id, channel_id);
-            let channel_restrict_ping = channel_ping_rule == PERMISSION::DENY;
+
             if override_canping == PERMISSION::DENY {
                 invalid_lists.push(("all".to_string(), ListInvalidReasons::RoleRestrictPing));
             } else if override_canping == PERMISSION::NEUTRAL {
                 if !general_canping {
                     invalid_lists.push(("all".to_string(), ListInvalidReasons::GuildRestrictPing));
-                } else if channel_restrict_ping {
+                } else if channel_ping_rule == PERMISSION::DENY {
                     invalid_lists
                         .push(("all".to_string(), ListInvalidReasons::ChannelRestrictPing));
                 }
@@ -182,9 +188,10 @@ impl Handler {
                 invalid_lists.push(("all".to_string(), ListInvalidReasons::OnGlobalCooldown));
             }
 
-            for list_name in list_names {
+            for list_name in &list_names {
                 let list_name = list_name
                     .value
+                    .as_ref()
                     .expect("Invalid /ping definition, should not be subcommand");
                 let list_name = list_name
                     .as_str()
@@ -204,7 +211,7 @@ impl Handler {
                         continue;
                     }
 
-                    if !ignore_cooldown && *last_time + (list_cooldown as u64) >= timestamp {
+                    if !member_admin && *last_time + (list_cooldown as u64) >= timestamp {
                         invalid_lists
                             .push((list_name.to_string(), ListInvalidReasons::OnLocalCooldown));
                         continue;
@@ -217,6 +224,7 @@ impl Handler {
                 }
             }
         }
+        let mut ephemeral = false;
         let mut content = String::new();
         if invalid_lists.len() == 0 {
             global.insert(guild_id, timestamp);
@@ -225,11 +233,27 @@ impl Handler {
             }
 
             if members.len() > 0 {
-                content = format!("Mentioning {} members:\n", members.len());
+                content = format!("Mentioning ");
+                let mut i = 0;
+                for list_name in &list_names {
+                    let list_name = list_name
+                        .value
+                        .as_ref()
+                        .expect("Invalid /ping definition, should not be subcommand");
+                    let list_name = list_name
+                        .as_str()
+                        .expect("Invalid /ping definition, should be string type");
+                    content += list_name;
+                    i += 1;
+                    if i < list_names.len() {
+                        content += ", ";
+                    }
+                }
+                content += format!(" with {} members:\n", members.len()).as_str();
                 for member in members {
                     content += format!("<@{}>, ", member).as_str();
                     if content.len() > 1940 {
-                        Handler::send_text(&content, command, ctx).await;
+                        Handler::send_text(&content, command, ctx, false).await;
                         content.clear();
                     }
                 }
@@ -237,6 +261,7 @@ impl Handler {
                 content += "These lists are empty.";
             }
         } else {
+            ephemeral = true;
             for falselist in invalid_lists {
                 content += match falselist.1 {
                     ListInvalidReasons::ChannelRestrictPing => {
@@ -264,7 +289,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, ephemeral).await;
     }
 
     async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -530,7 +555,7 @@ impl Handler {
                 }
             }
         }
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, true).await;
     }
 
     async fn handle_leave(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -575,14 +600,7 @@ impl Handler {
                 }
             }
         }
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(content))
-            })
-            .await
-            .expect("Failed to send leave response.");
+        Handler::send_text(&content, command, ctx, true).await;
     }
 
     async fn handle_create(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -619,7 +637,7 @@ impl Handler {
             };
         }
 
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn handle_remove(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -661,7 +679,7 @@ impl Handler {
             };
         }
 
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -689,12 +707,7 @@ impl Handler {
 
         let as_admin = Handler::can_manage_messages(command);
         if !as_admin {
-            Handler::send_text(
-                "You do not have permission to use this command.",
-                command,
-                ctx,
-            )
-            .await;
+            Handler::send_not_allowed(command, ctx).await;
             return;
         }
         let mut data = ctx.data.write().await;
@@ -714,7 +727,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn handle_remove_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -754,7 +767,7 @@ impl Handler {
             }
         }
 
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn autocomplete_alias(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -895,7 +908,7 @@ impl Handler {
                 }
             }
         }
-        Handler::send_text(&content, command, ctx).await;
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn handle_kick(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -2129,7 +2142,7 @@ impl Handler {
         }
 
         if !command.app_permissions.unwrap().manage_messages() {
-            Handler::send_text("Bot lacks permissions for purge", command, ctx).await;
+            Handler::send_text("Bot lacks permissions for purge", command, ctx, false).await;
         }
 
         let guild_id = command.guild_id.unwrap();
@@ -2145,7 +2158,7 @@ impl Handler {
             }
         }
         if nls {
-            Handler::send_text("No log channel specified", command, ctx).await;
+            Handler::send_text("No log channel specified", command, ctx, false).await;
             return;
         }
 
@@ -2168,7 +2181,13 @@ impl Handler {
 
         let mut select_menu_options: Vec<CreateSelectMenuOption> = Vec::new();
         for message in messages {
-            // if message.timestamp
+            if serenity::model::Timestamp::now().unix_timestamp()
+                - message.timestamp.unix_timestamp()
+                > 60 * (24 * 7 * 2 - 5)
+            // Giving 5 minutes to process the command in edge cases.
+            {
+                continue;
+            }
             let label = match message.content.len() {
                 0 => "Empty",
                 1..=90 => message.content.as_str(),
@@ -2177,6 +2196,10 @@ impl Handler {
             select_menu_options.push(CreateSelectMenuOption::new(label, message.id));
         }
 
+        if select_menu_options.len() == 0 {
+            Handler::send_text("No recent messages to log or purge", command, ctx, true).await;
+            return;
+        }
         let mut select_menu = CreateSelectMenu::default();
         select_menu
             .placeholder("Select multiple messages")
@@ -2283,8 +2306,7 @@ impl Handler {
             .channel_id
             .delete_messages(&ctx.http, ids)
             .await
-            .unwrap(); //TODO: errors on old messages
-
+            .unwrap(); //TODO: Might want to reverify no old messages are included
         res_cid
             .send_message(&ctx.http, |response| response.set_embed(embed))
             .await
@@ -2385,7 +2407,7 @@ impl Handler {
             panic!("Could not get database access.");
         }
 
-        Handler::send_text(message, command, ctx).await;
+        Handler::send_text(message, command, ctx, false).await;
     }
 
     async fn handle_auto_response_condition(
@@ -2457,7 +2479,7 @@ impl Handler {
         } else {
             panic!("Could not get database access.");
         }
-        Handler::send_text(message, command, ctx).await;
+        Handler::send_text(message, command, ctx, false).await;
     }
 }
 
