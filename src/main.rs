@@ -268,7 +268,7 @@ impl Handler {
                         format!("\nPings are not allowed in this channel.")
                     }
                     ListInvalidReasons::DoesNotExist => {
-                        format!("\nThe lsit {} does not exist.", falselist.0)
+                        format!("\nThe list {} does not exist.", falselist.0)
                     }
                     ListInvalidReasons::GuildRestrictPing => {
                         format!("\nYou do not have permission to ping in this server.")
@@ -2183,8 +2183,8 @@ impl Handler {
         for message in messages {
             if serenity::model::Timestamp::now().unix_timestamp()
                 - message.timestamp.unix_timestamp()
-                > 60 * (24 * 7 * 2 - 5)
-            // Giving 5 minutes to process the command in edge cases.
+                > 60 * 60 * (24 * 7 * 2 - 1)
+            // Giving 1 hour to process the command in edge cases.
             {
                 continue;
             }
