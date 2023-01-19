@@ -162,7 +162,6 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
-                    //TODO: fix guildids, allow importing over db
                     db.set_role_ignore_cooldown(guild_id, RoleId(*role_id as u64), true)
                         .unwrap();
                 } else {
@@ -179,7 +178,6 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
-                    //TODO: fix guildids, allow importing over db
                     db.set_role_canping(guild_id, RoleId(*role_id as u64), PERMISSION::ALLOW)
                         .unwrap();
                 } else {

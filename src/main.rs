@@ -544,11 +544,7 @@ impl Handler {
         let as_admin = Handler::can_manage_messages(command);
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
 
-        let mut content = format!(
-            "Attempting to remove user with id {} from {} lists:",
-            member_id,
-            list_names.len()
-        );
+        let mut content = format!("Leaving the following {} lists:", list_names.len());
         for list_name in list_names {
             let list_name_val = list_name.value.unwrap();
             let list_name_str = list_name_val.as_str().unwrap();
@@ -2172,6 +2168,7 @@ impl Handler {
 
         let mut select_menu_options: Vec<CreateSelectMenuOption> = Vec::new();
         for message in messages {
+            // if message.timestamp
             let label = match message.content.len() {
                 0 => "Empty",
                 1..=90 => message.content.as_str(),
@@ -2286,7 +2283,7 @@ impl Handler {
             .channel_id
             .delete_messages(&ctx.http, ids)
             .await
-            .unwrap();
+            .unwrap(); //TODO: errors on old messages
 
         res_cid
             .send_message(&ctx.http, |response| response.set_embed(embed))
