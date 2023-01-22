@@ -3,6 +3,7 @@ use serenity::{
     builder::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     },
+    futures::StreamExt,
     model::{
         application::{
             command::CommandOptionType,
@@ -249,35 +250,18 @@ impl Handler {
             }
         }
 
-        // println!(
-        //     "{:?} - {:?}",
-        //     command
-        //         .guild_id
-        //         .unwrap()
-        //         .to_guild_cached(&ctx.cache)
-        //         .unwrap()
-        //         .member_count,
-        //     command
-        //         .guild_id
-        //         .unwrap()
-        //         .members(&ctx.http, None, None)
-        //         .await
-        //         .unwrap()
-        // );
-        // let present_ids: Option<Vec<UserId>> = ctx
-        //     .cache
-        //     .guild_field(guild_id, |guild| guild.members.keys().cloned().collect());
-        // let present_ids: Option<Vec<UserId>> =
-        //     serenity::cache::Cache::guild_field(&ctx.cache, guild_id, |guild| {
-        //         guild.members.keys().cloned().collect()
-        //     });
-        // println!("{:?}", present_ids);
-        // if let Some(ids) = present_ids {
-        //     let idset = BTreeSet::from_iter(ids);
-        //     members.retain(|id| idset.contains(id));
-        // } else {
-        //     println!("Failed to retrieve user ids from guild, potentially including non-members");
-        // }
+        // I hate this, but it should work well enough...
+        let present_ids: BTreeSet<UserId> = BTreeSet::from_iter(
+            command
+                .guild_id
+                .unwrap()
+                .members_iter(&ctx.http)
+                .map(|member| member.expect("error fetching members").user.id)
+                .collect::<Vec<UserId>>()
+                .await,
+        );
+
+        let members: Vec<&UserId> = members.intersection(&present_ids).collect();
 
         let mut first_message = true;
 
