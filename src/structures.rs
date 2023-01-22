@@ -1,4 +1,4 @@
-use serenity::model::id::{GuildId, RoleId};
+use serenity::model::id::{ChannelId, GuildId, MessageId, RoleId};
 use std::cmp::max;
 use std::fmt;
 
@@ -119,16 +119,16 @@ impl LOGCONDITION {
 }
 
 pub enum ProposalStatus {
-    ACTIVE(ListId, usize, u64), // votes, timestamp
+    ACTIVE(ListId, usize, u64, ChannelId, MessageId), // list id, votes, timestamp, channelid, message id
     ACCEPTED(ListId),
     DENIED,
     REMOVED,
 }
 
 pub enum JoinResult {
-    SUCCES,
-    ALREADY_MEMBER,
-    LIST_DOES_NOT_EXIST,
-    BOT_ERROR,
-    MISSING_PERMS,
+    Succes,
+    AlreadyMember,
+    ListDoesNotExist,
+    BotError,
+    MissingPerms,
 }

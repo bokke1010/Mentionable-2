@@ -12,10 +12,28 @@ impl Database {
     // ANCHOR Initialization
     pub fn new(database_path: &str) -> Database {
         let conn = Connection::open(database_path).expect("Invalid path or SQL open failure");
+        let mut database = Database { db: conn };
 
-        match conn.query_row("PRAGMA user_version", [], |row| row.get(0)) {
-            Ok(1) => println!("The database was loaded succesfully"),
-            Ok(0) => println!("Created new database"),
+        match database
+            .db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+        {
+            Ok(2) => println!("The database was loaded succesfully"),
+            Ok(1) => {
+                database
+                    .db
+                    .execute_batch(
+                        "PRAGMA user_version = 2; \n\
+                        ALTER TABLE proposals ADD channel_id INTEGER NOT NULL DEFAULT 0; \n\
+                        ALTER TABLE proposals ADD message_id INTEGER NOT NULL DEFAULT 0;",
+                    )
+                    .expect("Issue updating database");
+                println!("Updating database")
+            }
+            Ok(0) => {
+                database.init_tables();
+                println!("Created new database");
+            }
             Ok(v) => {
                 println!(
                     "Unknown database version {}, likely from a future release, aborting",
@@ -26,14 +44,11 @@ impl Database {
             Err(e) => Err(e).unwrap(),
         }
 
-        let mut database = Database { db: conn };
-        database.init_tables();
-
         database
     }
 
     fn init_tables(&mut self) -> () {
-        let statement = "PRAGMA user_version = 1; \n\
+        let statement = "PRAGMA user_version = 2; \n\
             PRAGMA foreign_keys = ON;\n\
             CREATE TABLE IF NOT EXISTS guilds ( \
                 id                  INTEGER PRIMARY KEY NOT NULL, \
@@ -96,7 +111,9 @@ impl Database {
                 invert              INTEGER DEFAULT 0);\n\
             CREATE TABLE IF NOT EXISTS proposals ( \
                 list_id             INTEGER PRIMARY KEY REFERENCES lists(id), \
-                timestamp           INTEGER NOT NULL );";
+                timestamp           INTEGER NOT NULL, \
+                channel_id          INTEGER NOT NULL DEFAULT 0 \
+                message_id          INTEGER NOT NULL DEFAULT 0 );";
         self.db.execute_batch(statement).expect("Malformed SQL")
     }
 
@@ -316,6 +333,18 @@ impl Database {
             ).optional().unwrap()
     }
 
+    pub fn get_list_exists(&mut self, list_id: ListId) -> bool {
+        self.db
+            .query_row(
+                "SELECT 1 FROM lists WHERE lists.id=?1",
+                params![list_id],
+                |row| row.get::<usize, u64>(0),
+            )
+            .optional()
+            .expect("Malformed SQL statement")
+            != None
+    }
+
     pub fn get_list_names(&mut self, list_id: ListId) -> Vec<String> {
         let mut stmt = self
             .db
@@ -488,12 +517,14 @@ impl Database {
         Ok(lists)
     }
 
-    pub fn get_members_in_list(&mut self, list_id: ListId) -> Vec<u64> {
+    pub fn get_members_in_list(&mut self, list_id: ListId) -> Vec<UserId> {
         let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=?").unwrap();
         let rows = stmt
-            .query_map(params![list_id], |row| row.get::<usize, u64>(0))
+            .query_map(params![list_id], |row| {
+                row.get::<usize, u64>(0).map(|id| UserId(id))
+            })
             .unwrap();
-        rows.collect::<Result<Vec<u64>, _>>().unwrap()
+        rows.collect::<Result<Vec<UserId>, _>>().unwrap()
     }
 
     pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> JoinResult {
@@ -508,16 +539,16 @@ impl Database {
                     extended_code: 2067, // Constraint violation, already got this membership
                 },
                 _,
-            )) => JoinResult::ALREADY_MEMBER, // Already in list
+            )) => JoinResult::AlreadyMember, // Already in list
             Err(Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: _,
                     extended_code: 787,
                 },
                 _,
-            )) => JoinResult::LIST_DOES_NOT_EXIST, // list not found
+            )) => JoinResult::ListDoesNotExist, // list not found
             Err(b) => Err(b).expect("Unexpected sql error"),
-            Ok(_) => JoinResult::SUCCES,
+            Ok(_) => JoinResult::Succes,
         }
     }
 
@@ -777,6 +808,7 @@ impl Database {
         guild_id: GuildId,
         name: &String,
         timestamp: i64,
+        channel_id: ChannelId,
     ) -> Option<ListId> {
         // let transaction = self.db.transaction().unwrap();
         if let Some(list_id) = self.add_list(guild_id, name) {
@@ -785,14 +817,23 @@ impl Database {
             self.set_visible(list_id, false);
             self.db
                 .execute(
-                    "INSERT INTO proposals (list_id, timestamp) VALUES (?1, ?2)",
-                    params![list_id, timestamp],
+                    "INSERT INTO proposals (list_id, timestamp, channel_id) VALUES (?1, ?2, ?3)",
+                    params![list_id, timestamp, channel_id.as_u64()],
                 )
                 .unwrap();
             return Some(list_id);
         }
         None
         // transaction.commit();
+    }
+    pub fn complete_proposal(&mut self, list_id: ListId, message_id: MessageId) -> () {
+        println!("Completing proposal with message id {}", message_id);
+        self.db
+            .execute(
+                "UPDATE proposals SET message_id = ?1 WHERE list_id=?2",
+                params![message_id.as_u64(), list_id],
+            )
+            .unwrap();
     }
 
     // pub fn proposal_refe
@@ -819,14 +860,20 @@ impl Database {
         let timestamp = self
             .db
             .query_row(
-                "SELECT timestamp FROM proposals WHERE list_id = ?1",
+                "SELECT timestamp, channel_id, message_id FROM proposals WHERE list_id = ?1",
                 params![list_id],
-                |row| row.get::<usize, u64>(0),
+                |row| {
+                    Ok((
+                        row.get::<usize, u64>(0)?,
+                        ChannelId(row.get::<usize, u64>(1)?),
+                        MessageId(row.get::<usize, u64>(2)?),
+                    ))
+                },
             )
             .optional()
             .unwrap();
-        if let Some(timestamp) = timestamp {
-            return ProposalStatus::ACTIVE(list_id, votes, timestamp);
+        if let Some((timestamp, channel_id, message_id)) = timestamp {
+            return ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id);
         }
         ProposalStatus::REMOVED
     }
@@ -847,7 +894,7 @@ impl Database {
     }
 
     pub fn get_proposals(&mut self, guild_id: GuildId) -> Vec<(String, ProposalStatus)> {
-        let lists_query = "SELECT alias.name, lists.id, proposals.timestamp, ( \
+        let lists_query = "SELECT alias.name, lists.id, proposals.timestamp, proposals.channel_id, proposals.message_id, ( \
                         SELECT COUNT(memberships.user_id) \
                         FROM memberships \
                         WHERE memberships.list_id = lists.id \
@@ -861,7 +908,13 @@ impl Database {
         stmt.query_map(params![guild_id.as_u64()], |mf| {
             Ok((
                 mf.get(0)?,
-                ProposalStatus::ACTIVE(mf.get(1)?, mf.get(3)?, mf.get(2)?),
+                ProposalStatus::ACTIVE(
+                    mf.get(1)?,            // name
+                    mf.get(5)?,            // votes
+                    mf.get(2)?,            // timestamp
+                    ChannelId(mf.get(3)?), // channel id
+                    MessageId(mf.get(4)?), // message id
+                ),
             ))
         })
         .unwrap()
@@ -870,7 +923,7 @@ impl Database {
     }
 
     pub fn get_bot_proposals(&mut self) -> Vec<(GuildId, ProposalStatus)> {
-        let lists_query = "SELECT lists.guild_id, lists.id, proposals.timestamp, ( \
+        let lists_query = "SELECT lists.guild_id, lists.id, proposals.timestamp, proposals.channel_id, proposals.message_id, ( \
                         SELECT COUNT(memberships.user_id) \
                         FROM memberships \
                         WHERE memberships.list_id = lists.id \
@@ -881,7 +934,13 @@ impl Database {
         stmt.query_map(params![], |mf| {
             Ok((
                 GuildId(mf.get(0)?),
-                ProposalStatus::ACTIVE(mf.get(1)?, mf.get(3)?, mf.get(2)?),
+                ProposalStatus::ACTIVE(
+                    mf.get(1)?,            // name
+                    mf.get(5)?,            // votes
+                    mf.get(2)?,            // timestamp
+                    ChannelId(mf.get(3)?), // channel id
+                    MessageId(mf.get(4)?), // message id
+                ),
             ))
         })
         .unwrap()

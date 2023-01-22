@@ -92,6 +92,30 @@ impl Handler {
             .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
     }
 
+    async fn send_channel(
+        text: &str,
+        channel_id: ChannelId,
+        ctx: &Context,
+        ephemeral: bool,
+        reference: Option<serenity::model::prelude::MessageReference>,
+    ) {
+        channel_id
+            .send_message(&ctx.http, |message| {
+                let flags = if ephemeral {
+                    serenity::model::prelude::MessageFlags::EPHEMERAL
+                } else {
+                    serenity::model::prelude::MessageFlags::empty()
+                };
+                message.content(text).flags(flags);
+                if let Some(reference) = reference {
+                    message.reference_message(reference);
+                }
+                message
+            })
+            .await
+            .expect("Failed to send text response, see error for details.");
+    }
+
     async fn send_text(
         text: &str,
         command: &ApplicationCommandInteraction,
@@ -136,7 +160,7 @@ impl Handler {
 
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut list_ids: Vec<ListId> = vec![];
-        let mut members: BTreeSet<u64> = BTreeSet::new();
+        let mut members: BTreeSet<UserId> = BTreeSet::new();
         let mut invalid_lists: Vec<(String, ListInvalidReasons)> = vec![];
 
         let mut data = ctx.data.write().await;
@@ -216,7 +240,7 @@ impl Handler {
                             .push((list_name.to_string(), ListInvalidReasons::OnLocalCooldown));
                         continue;
                     }
-                    // members.intersection(other)
+
                     members.extend(x.get_members_in_list(list_id));
                     list_ids.push(list_id);
                 } else {
@@ -224,6 +248,39 @@ impl Handler {
                 }
             }
         }
+
+        // println!(
+        //     "{:?} - {:?}",
+        //     command
+        //         .guild_id
+        //         .unwrap()
+        //         .to_guild_cached(&ctx.cache)
+        //         .unwrap()
+        //         .member_count,
+        //     command
+        //         .guild_id
+        //         .unwrap()
+        //         .members(&ctx.http, None, None)
+        //         .await
+        //         .unwrap()
+        // );
+        // let present_ids: Option<Vec<UserId>> = ctx
+        //     .cache
+        //     .guild_field(guild_id, |guild| guild.members.keys().cloned().collect());
+        // let present_ids: Option<Vec<UserId>> =
+        //     serenity::cache::Cache::guild_field(&ctx.cache, guild_id, |guild| {
+        //         guild.members.keys().cloned().collect()
+        //     });
+        // println!("{:?}", present_ids);
+        // if let Some(ids) = present_ids {
+        //     let idset = BTreeSet::from_iter(ids);
+        //     members.retain(|id| idset.contains(id));
+        // } else {
+        //     println!("Failed to retrieve user ids from guild, potentially including non-members");
+        // }
+
+        let mut first_message = true;
+
         let mut ephemeral = false;
         let mut content = String::new();
         if invalid_lists.len() == 0 {
@@ -253,7 +310,13 @@ impl Handler {
                 for member in members {
                     content += format!("<@{}>, ", member).as_str();
                     if content.len() > 1940 {
-                        Handler::send_text(&content, command, ctx, false).await;
+                        if first_message {
+                            Handler::send_text(&content, command, ctx, false).await;
+                            first_message = false;
+                        } else {
+                            Handler::send_channel(&content, command.channel_id, ctx, false, None)
+                                .await;
+                        }
                         content.clear();
                     }
                 }
@@ -288,8 +351,11 @@ impl Handler {
                 }.as_str()
             }
         }
-
-        Handler::send_text(&content, command, ctx, ephemeral).await;
+        if first_message {
+            Handler::send_text(&content, command, ctx, ephemeral).await;
+        } else {
+            Handler::send_channel(&content, command.channel_id, ctx, false, None).await;
+        }
     }
 
     async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
@@ -467,14 +533,14 @@ impl Handler {
             if let Some(list_id) = res_list_id {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
-                    return JoinResult::MISSING_PERMS;
+                    return JoinResult::MissingPerms;
                 }
                 return x.add_member(member_id, list_id);
             } else {
-                return JoinResult::LIST_DOES_NOT_EXIST;
+                return JoinResult::ListDoesNotExist;
             }
         }
-        return JoinResult::BOT_ERROR;
+        return JoinResult::BotError;
     }
 
     async fn remove_member(
@@ -494,20 +560,20 @@ impl Handler {
             if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                 let (_, restricted_join, _) = x.get_list_permissions(list_id);
                 if restricted_join && !as_admin {
-                    return JoinResult::MISSING_PERMS;
+                    return JoinResult::MissingPerms;
                 }
                 if x.remove_member(member_id, list_id)
                     .expect("Failed to remove membership.")
                 {
-                    return JoinResult::SUCCES;
+                    return JoinResult::Succes;
                 } else {
-                    return JoinResult::ALREADY_MEMBER;
+                    return JoinResult::AlreadyMember;
                 };
             } else {
-                return JoinResult::LIST_DOES_NOT_EXIST;
+                return JoinResult::ListDoesNotExist;
             }
         }
-        return JoinResult::BOT_ERROR;
+        return JoinResult::BotError;
     }
 
     async fn handle_join(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -530,23 +596,23 @@ impl Handler {
                 .add_member(guild_id, list_name_str, member_id, member_admin, ctx)
                 .await
             {
-                JoinResult::ALREADY_MEMBER => {
+                JoinResult::AlreadyMember => {
                     content += format!("\nYou already joined the list {}", list_name_str).as_str();
                 }
-                JoinResult::SUCCES => {
+                JoinResult::Succes => {
                     content += format!("\nAdded to list {}", list_name_str).as_str();
                 }
-                JoinResult::LIST_DOES_NOT_EXIST => {
+                JoinResult::ListDoesNotExist => {
                     content += format!("\nThe list {} does not exist", list_name_str).as_str();
                 }
-                JoinResult::MISSING_PERMS => {
+                JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to join the list {}.",
                         list_name_str
                     )
                     .as_str();
                 }
-                JoinResult::BOT_ERROR => {
+                JoinResult::BotError => {
                     content += format!(
                         "\nSomething went wrong trying to join the \"{}\" list.",
                         list_name_str
@@ -578,23 +644,23 @@ impl Handler {
                 .remove_member(guild_id, list_name_str, member_id, as_admin, ctx)
                 .await
             {
-                JoinResult::SUCCES => {
+                JoinResult::Succes => {
                     content += format!("\nRemoved from list {}", list_name_str).as_str();
                 }
-                JoinResult::ALREADY_MEMBER => {
+                JoinResult::AlreadyMember => {
                     content += format!("\nYou were not in the list {}", list_name_str).as_str();
                 }
-                JoinResult::LIST_DOES_NOT_EXIST => {
+                JoinResult::ListDoesNotExist => {
                     content += format!("\nThe list {} does not exist", list_name_str).as_str();
                 }
-                JoinResult::MISSING_PERMS => {
+                JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to leave the list {}",
                         list_name_str
                     )
                     .as_str();
                 }
-                JoinResult::BOT_ERROR => {
+                JoinResult::BotError => {
                     content +=
                         format!("\nFailed to remove member from list {}", list_name_str).as_str();
                 }
@@ -886,23 +952,23 @@ impl Handler {
                 .add_member(guild_id, list_name_str, member_id, true, ctx)
                 .await
             {
-                JoinResult::ALREADY_MEMBER => {
+                JoinResult::AlreadyMember => {
                     content += format!("\nUser was already in list {}", list_name_str).as_str();
                 }
-                JoinResult::SUCCES => {
+                JoinResult::Succes => {
                     content += format!("\nAdded to list {}", list_name_str).as_str();
                 }
-                JoinResult::LIST_DOES_NOT_EXIST => {
+                JoinResult::ListDoesNotExist => {
                     content += format!("\nList {} does not exist", list_name_str).as_str();
                 }
-                JoinResult::MISSING_PERMS => {
+                JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to add user to list {}.",
                         list_name_str
                     )
                     .as_str();
                 }
-                JoinResult::BOT_ERROR => {
+                JoinResult::BotError => {
                     content += format!("\nAn error occured adding user to list {}", list_name_str)
                         .as_str();
                 }
@@ -950,24 +1016,24 @@ impl Handler {
                 .remove_member(guild_id, list_name_str, member_id, true, ctx)
                 .await
             {
-                JoinResult::SUCCES => {
+                JoinResult::Succes => {
                     content += format!("\nRemoved from list {}", list_name_str).as_str();
                 }
-                JoinResult::ALREADY_MEMBER => {
+                JoinResult::AlreadyMember => {
                     content +=
                         format!("\nThis person was not in the list {}", list_name_str).as_str();
                 }
-                JoinResult::LIST_DOES_NOT_EXIST => {
+                JoinResult::ListDoesNotExist => {
                     content += format!("\nThe list {} does not exist", list_name_str).as_str();
                 }
-                JoinResult::MISSING_PERMS => {
+                JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to remove users from the list {}",
                         list_name_str
                     )
                     .as_str();
                 }
-                JoinResult::BOT_ERROR => {
+                JoinResult::BotError => {
                     content +=
                         format!("\nFailed to remove member from list {}", list_name_str).as_str();
                 }
@@ -1664,7 +1730,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, name, timestamp);
+                proposal_id = x.start_proposal(guild_id, name, timestamp, channel_id);
                 if proposal_id != None {
                     x.vote_proposal(proposal_id.unwrap(), member.user.id);
                 }
@@ -1704,6 +1770,11 @@ impl Handler {
                 })
                 .await
                 .unwrap();
+            let smes = command.get_interaction_response(&ctx.http).await.unwrap();
+            let message_id = smes.id;
+            if let Ok(mut x) = db.clone().lock() {
+                x.complete_proposal(proposal_id.unwrap(), message_id); //FIXME: dunno what's wrong
+            }
         } else {
             if override_canpropose == PERMISSION::DENY {
                 embed
@@ -1773,7 +1844,11 @@ impl Handler {
                     x.remove_list(list_id).unwrap();
                     embed.title("Voting cancelled");
                 } else {
-                    embed.title("Proposal inactive or approved");
+                    if x.get_list_exists(list_id) {
+                        embed.title("Proposal already accepted");
+                    } else {
+                        embed.title("Proposal already removed");
+                    }
                 }
             }
 
@@ -1844,7 +1919,11 @@ impl Handler {
                 if x.accept_proposal(list_id) {
                     embed.title("Proposal acccepted");
                 } else {
-                    embed.title("Proposal already accepted / removed");
+                    if x.get_list_exists(list_id) {
+                        embed.title("Proposal already accepted");
+                    } else {
+                        embed.title("Proposal already removed");
+                    }
                 }
             }
 
@@ -1867,53 +1946,58 @@ impl Handler {
             .unwrap();
     }
 
-    async fn check_proposals(ctx: &Context) {
+    /// Gets called without guild context automatically
+    async fn external_check_proposals(ctx: &Context) {
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
         let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
 
+        let mut replies: Vec<(ChannelId, MessageId, bool)> = vec![];
         if let Ok(mut x) = db.clone().lock() {
             for (guild_id, proposal) in x.get_bot_proposals() {
-                if let ProposalStatus::ACTIVE(list_id, votes, timestamp) = proposal {
+                if let ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id) =
+                    proposal
+                {
                     let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
                     if votes >= vote_threshold {
                         x.accept_proposal(list_id);
+                        if channel_id != 0 && message_id != 0 {
+                            replies.push((channel_id, message_id, true));
+                        }
                     } else if timestamp + vote_timeout <= now {
                         x.remove_proposal(list_id).unwrap();
                         x.remove_list(list_id).unwrap();
+                        if channel_id != 0 && message_id != 0 {
+                            replies.push((channel_id, message_id, false));
+                        }
                     }
                 }
             }
         }
-    }
 
-    async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
-        let mut data = ctx.data.write().await;
-        let BotData { database: db, .. } = data
-            .get_mut::<DB>()
-            .expect("Could not find database in bot data");
-        if let Ok(mut x) = db.clone().lock() {
-            match x.get_proposal_data(list_id) {
-                ProposalStatus::ACTIVE(_, votes, timestamp) => {
-                    let guild_id = x.get_list_guild(list_id).unwrap();
-                    let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
-                    let now = serenity::model::Timestamp::now().unix_timestamp() as u64;
-                    if votes >= vote_threshold {
-                        x.accept_proposal(list_id);
-                        return ProposalStatus::ACCEPTED(list_id);
-                    } else if timestamp + vote_timeout <= now {
-                        x.remove_proposal(list_id).unwrap();
-                        x.remove_list(list_id).unwrap();
-                        return ProposalStatus::DENIED;
-                    }
-                    return ProposalStatus::ACTIVE(list_id, votes, timestamp);
-                }
-                a => return a,
+        //TODO: this is lot of potential awaits, actually using async might be nice?
+        for (channel_id, message_id, accepted) in replies {
+            let reference =
+                serenity::model::prelude::MessageReference::from((channel_id, message_id));
+            let new_message = if accepted {
+                "Proposal accepted"
+            } else {
+                "Proposal timed out"
             };
+            Handler::send_channel(new_message, channel_id, ctx, false, Some(reference)).await;
+            let mut embed = CreateEmbed::default();
+
+            embed.description(new_message);
+            channel_id
+                .edit_message(&ctx.http, message_id, |data| {
+                    data.set_embed(embed)
+                        .set_components(serenity::builder::CreateComponents::default())
+                })
+                .await
+                .unwrap();
         }
-        panic!("could not get db access");
     }
 
     async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
@@ -1933,17 +2017,35 @@ impl Handler {
                 embed.title("No proposals found");
             }
             for (name, proposal) in proposals {
-                if let ProposalStatus::ACTIVE(_, votes, timestamp) = proposal {
+                if let ProposalStatus::ACTIVE(_, votes, timestamp, channel_id, message_id) =
+                    proposal
+                {
                     let minutes = (timeout as i64 - (now - timestamp) as i64) / 60;
                     let (hours, minutes) = (minutes / 60, minutes % 60);
-                    embed.field(
-                        name,
-                        format!(
-                            "Has {} / {} votes, {} hours and {} minutes remaining.",
-                            votes, threshold, hours, minutes,
-                        ),
-                        true,
-                    );
+
+                    if message_id == 0 {
+                        embed.field(
+                            name,
+                            format!(
+                                "Has {} / {} votes, {} hours and {} minutes remaining.",
+                                votes, threshold, hours, minutes,
+                            ),
+                            true,
+                        );
+                    } else {
+                        embed.field(
+                            name,
+                            format!(
+                                "Has {} / {} votes, {} hours and {} minutes remaining.\n{}",
+                                votes,
+                                threshold,
+                                hours,
+                                minutes,
+                                message_id.link(channel_id, Some(guild_id)),
+                            ),
+                            true,
+                        );
+                    }
                 }
             }
         }
@@ -1956,6 +2058,30 @@ impl Handler {
             })
             .await
             .unwrap();
+    }
+
+    async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
+        let mut data = ctx.data.write().await;
+        let BotData { database: db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
+
+        if let Ok(mut x) = db.clone().lock() {
+            match x.get_proposal_data(list_id) {
+                ProposalStatus::ACTIVE(_, votes, timestamp, t1, t2) => {
+                    let guild_id = x.get_list_guild(list_id).unwrap();
+                    let (_, _, vote_threshold) = x.get_propose_settings(guild_id);
+                    if votes >= vote_threshold {
+                        x.accept_proposal(list_id);
+                        return ProposalStatus::ACCEPTED(list_id);
+                    }
+                    // Do not remove proposals when voting for social reasons?
+                    return ProposalStatus::ACTIVE(list_id, votes, timestamp, t1, t2);
+                }
+                a => return a,
+            };
+        }
+        panic!("could not get db access");
     }
 
     async fn propose_vote_from_component(
@@ -1984,12 +2110,14 @@ impl Handler {
                 embed.description("Proposal accepted");
             }
             ProposalStatus::DENIED => {
+                // Doesn't happen
                 embed.description("Proposal expired");
             }
             ProposalStatus::REMOVED => {
+                // Won't happen because a list getting cancelled because you voted ain't fun
                 embed.description("Proposal not found");
             }
-            ProposalStatus::ACTIVE(_, votes, _) => {
+            ProposalStatus::ACTIVE(_, votes, ..) => {
                 embed.author(|ab| {
                     ab.icon_url(
                         old_embed
@@ -2143,6 +2271,7 @@ impl Handler {
 
         if !command.app_permissions.unwrap().manage_messages() {
             Handler::send_text("Bot lacks permissions for purge", command, ctx, false).await;
+            return;
         }
 
         let guild_id = command.guild_id.unwrap();
@@ -2660,7 +2789,7 @@ impl EventHandler for Handler {
             let ctx1 = Arc::clone(&ctx);
             tokio::spawn(async move {
                 loop {
-                    Handler::check_proposals(&ctx1).await;
+                    Handler::external_check_proposals(&ctx1).await;
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             });
