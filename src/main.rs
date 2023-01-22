@@ -2316,7 +2316,7 @@ impl Handler {
         let mut select_menu = CreateSelectMenu::default();
         select_menu
             .placeholder("Select multiple messages")
-            .max_values(min(25, select_menu_options.len() as u64))
+            .max_values(min(18, select_menu_options.len() as u64))
             .options(|options| options.set_options(select_menu_options));
 
         if let Some(user) = ref_user {
