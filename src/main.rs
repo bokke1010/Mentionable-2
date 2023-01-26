@@ -224,13 +224,13 @@ impl Handler {
 
                 if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
-                    let (mut list_cooldown, _, list_restrict_ping) =
+                    let (mut list_cooldown, _, list_ping_permission) =
                         x.get_list_permissions(list_id);
                     if list_cooldown == -1 {
                         list_cooldown = pingcooldown as i64;
                     }
 
-                    if list_restrict_ping && !member_admin {
+                    if list_ping_permission == PERMISSION::DENY && !member_admin {
                         invalid_lists
                             .push((list_name.to_string(), ListInvalidReasons::ListRestrictPing));
                         continue;
@@ -515,8 +515,8 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Some(list_id) = res_list_id {
-                let (_, restricted_join, _) = x.get_list_permissions(list_id);
-                if restricted_join && !as_admin {
+                let (_, list_join_permission, _) = x.get_list_permissions(list_id);
+                if list_join_permission == PERMISSION::DENY && !as_admin {
                     return JoinResult::MissingPerms;
                 }
                 return x.add_member(member_id, list_id);
@@ -542,8 +542,8 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
-                let (_, restricted_join, _) = x.get_list_permissions(list_id);
-                if restricted_join && !as_admin {
+                let (_, list_join_permission, _) = x.get_list_permissions(list_id);
+                if list_join_permission == PERMISSION::DENY && !as_admin {
                     return JoinResult::MissingPerms;
                 }
                 if x.remove_member(member_id, list_id)
@@ -1438,17 +1438,12 @@ impl Handler {
                                 }
                                 "allow_join" => {
                                     let resolved_value = setting.resolved.as_ref().unwrap();
-                                    if let CommandDataOptionValue::Boolean(ref joinable) =
+
+                                    if let CommandDataOptionValue::String(ref joinable) =
                                         *resolved_value
                                     {
-                                        x.set_joinable(
-                                            list,
-                                            if *joinable {
-                                                PERMISSION::NEUTRAL
-                                            } else {
-                                                PERMISSION::DENY
-                                            },
-                                        );
+                                        let perm = PERMISSION::from_str(&joinable).unwrap();
+                                        x.set_joinable(list, perm);
                                         embed.field("set joinable", format!("{}", joinable), false);
                                     } else {
                                         panic!("The parameter allow_join for configure list is incorrectly configured");
@@ -1456,17 +1451,11 @@ impl Handler {
                                 }
                                 "allow_ping" => {
                                     let resolved_value = setting.resolved.as_ref().unwrap();
-                                    if let CommandDataOptionValue::Boolean(ref pingable) =
+                                    if let CommandDataOptionValue::String(ref pingable) =
                                         *resolved_value
                                     {
-                                        x.set_pingable(
-                                            list,
-                                            if *pingable {
-                                                PERMISSION::NEUTRAL
-                                            } else {
-                                                PERMISSION::DENY
-                                            },
-                                        );
+                                        let perm = PERMISSION::from_str(&pingable).unwrap();
+                                        x.set_pingable(list, perm);
                                         embed.field("allow ping", format!("{}", pingable), false);
                                     } else {
                                         panic!("The parameter allow_ping for configure list is incorrectly configured");

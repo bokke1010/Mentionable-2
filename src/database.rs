@@ -310,7 +310,7 @@ impl Database {
 
     //Getters
 
-    pub fn get_list_permissions(&self, list_id: ListId) -> (i64, bool, bool) {
+    pub fn get_list_permissions(&self, list_id: ListId) -> (i64, PERMISSION, PERMISSION) {
         self.db
             .query_row(
                 "SELECT cooldown, join_permission, ping_permission FROM lists WHERE id=?1",
@@ -318,8 +318,8 @@ impl Database {
                 |row| {
                     Ok((
                         row.get::<usize, i64>(0)?,
-                        row.get::<usize, bool>(1)?,
-                        row.get::<usize, bool>(2)?,
+                        PERMISSION::fromint(row.get::<usize, u64>(1)?),
+                        PERMISSION::fromint(row.get::<usize, u64>(2)?),
                     ))
                 },
             )
@@ -485,7 +485,7 @@ impl Database {
                 WHERE lists.guild_id=:guid \
                 AND alias.name LIKE '%' || :filter || '%' \
                 AND alias.list_id = lists.id \
-                AND (NOT lists.ping_permission = :permissiondeny OR :show_all)
+                AND (NOT lists.join_permission = :permissiondeny OR :show_all)
                 AND NOT EXISTS ( \
                     SELECT id FROM memberships WHERE \
                     memberships.user_id = :user \
@@ -841,8 +841,8 @@ impl Database {
     pub fn accept_proposal(&mut self, list_id: ListId) -> bool {
         // let transaction = self.db.transaction().unwrap();
         if self.remove_proposal(list_id).unwrap() {
-            self.set_pingable(list_id, PERMISSION::ALLOW);
-            self.set_joinable(list_id, PERMISSION::ALLOW);
+            self.set_pingable(list_id, PERMISSION::NEUTRAL);
+            self.set_joinable(list_id, PERMISSION::NEUTRAL);
             self.set_visible(list_id, true);
             true
         } else {

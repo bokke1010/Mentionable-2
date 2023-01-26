@@ -856,15 +856,21 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                                 option
                                     .name("allow_join")
                                     .description("Allow anyone to join or leave this list.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
                                     .name("allow_ping")
                                     .description("Allow anyone to mention this list.")
-                                    .kind(CommandOptionType::Boolean)
+                                    .kind(CommandOptionType::String)
                                     .required(false)
+                                    .add_string_choice("Reset", "0")
+                                    .add_string_choice("Deny", "1")
+                                    .add_string_choice("Allow", "2")
                             })
                             .create_sub_option(|option| {
                                 option
