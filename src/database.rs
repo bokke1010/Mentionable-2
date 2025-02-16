@@ -122,7 +122,7 @@ impl Database {
         self.db
             .query_row(
                 "SELECT EXISTS (SELECT id FROM guilds WHERE id=?1)",
-                params![guild_id.as_u64()],
+                params![guild_id.get()],
                 |row| row.get::<usize, bool>(0),
             )
             .expect("Unexpected database error when checking guild existance")
@@ -133,7 +133,7 @@ impl Database {
             return Ok(());
         }
         self.db
-            .execute("INSERT INTO guilds (id) VALUES (?)", [id.as_u64()])?;
+            .execute("INSERT INTO guilds (id) VALUES (?)", [id.get()])?;
         Ok(())
     }
 
@@ -141,7 +141,7 @@ impl Database {
         self.db
             .query_row(
                 "SELECT general_cooldown, general_canping, pingcooldown FROM guilds WHERE id=?1",
-                params![guild_id.as_u64()],
+                params![guild_id.get()],
                 |row| {
                     Ok((
                         row.get::<usize, u64>(0)?,
@@ -156,7 +156,7 @@ impl Database {
     pub fn set_guild_canping(&mut self, guild_id: GuildId, value: bool) -> Result<(), Error> {
         self.db.execute(
             "UPDATE guilds SET general_canping = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
+            params![value, guild_id.get()],
         )?;
         Ok(())
     }
@@ -168,7 +168,7 @@ impl Database {
     ) -> Result<(), Error> {
         self.db.execute(
             "UPDATE guilds SET general_cooldown = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
+            params![value, guild_id.get()],
         )?;
         Ok(())
     }
@@ -176,7 +176,7 @@ impl Database {
     pub fn set_guild_ping_cooldown(&mut self, guild_id: GuildId, value: u64) -> Result<(), Error> {
         self.db.execute(
             "UPDATE guilds SET pingcooldown = ?1 WHERE id = ?2",
-            params![value, guild_id.as_u64()],
+            params![value, guild_id.get()],
         )?;
         Ok(())
     }
@@ -187,7 +187,7 @@ impl Database {
         let suc = tx
             .execute(
                 "INSERT INTO lists (guild_id) VALUES (?1);",
-                params![guild_id.as_u64()],
+                params![guild_id.get()],
             )
             .unwrap();
         if suc == 0 {
@@ -203,6 +203,7 @@ impl Database {
     pub fn remove_list(&mut self, list_id: ListId) -> Result<bool, Error> {
         self.remove_all_alias(list_id)?;
         self.remove_all_members(list_id)?;
+        self.remove_proposal(list_id)?;
         Ok(self
             .db
             .execute("DELETE FROM lists WHERE id = ?1", params![list_id])?
@@ -329,7 +330,7 @@ impl Database {
     pub fn get_list_id_by_name(&mut self, list_name: &str, guild_id: GuildId) -> Option<ListId> {
         self.db.query_row(
                 "SELECT lists.id FROM lists, alias WHERE alias.name=?1 AND alias.list_id = lists.id AND lists.guild_id=?2",
-                params![list_name, guild_id.as_u64()], |row| row.get::<usize, u64>(0)
+                params![list_name, guild_id.get()], |row| row.get::<usize, u64>(0)
             ).optional().unwrap()
     }
 
@@ -375,7 +376,7 @@ impl Database {
                 ORDER BY alias.name ASC";
         let mut stmt = self.db.prepare(lists_query)?;
         let mut rows = stmt.query(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":show_hidden": show_hidden },
+                named_params! { ":guid": guild_id.get(), ":filter": filter, ":show_hidden": show_hidden },
             )?;
 
         let mut lists = Vec::new();
@@ -407,7 +408,7 @@ impl Database {
                     AND alias.name LIKE '%' || :filter || '%' \
                     AND alias.list_id = lists.id \
                     AND (lists.visible = 1 OR :show_hidden)",
-                    named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":show_hidden": show_hidden},
+                    named_params! { ":guid": guild_id.get(), ":filter": filter, ":show_hidden": show_hidden},
                     |row| row.get::<usize, usize>(0),
                 )
                 .unwrap_or(0)
@@ -431,7 +432,7 @@ impl Database {
                 LIMIT :start, :amt";
         let mut stmt = self.db.prepare(lists_query).unwrap(); // Sql should be correct
         let rows = stmt.query_map(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64 },
+                named_params! { ":guid": guild_id.get(), ":filter": filter, ":amt": amount, ":start": start, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64 },
                 |row| row.get::<usize, String>(0)
             ).unwrap(); // fails if parameters don't bind (sql wrong)
 
@@ -464,7 +465,7 @@ impl Database {
             .prepare(lists_query)
             .expect("Sql statement malformed");
         let rows = stmt.query_map(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() },
+                named_params! { ":guid": guild_id.get(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.get() },
                 |row| row.get::<usize, String>(0)
             ).expect("Error binding parameters");
 
@@ -494,7 +495,7 @@ impl Database {
                 LIMIT 0, :amt";
         let mut stmt = self.db.prepare(lists_query).expect("Sql query malformed");
         let rows = stmt.query_map(
-                named_params! { ":guid": guild_id.as_u64(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.as_u64() },
+                named_params! { ":guid": guild_id.get(), ":filter": filter, ":amt": amount, ":show_all": show_all, ":permissiondeny": PERMISSION::DENY as u64, ":user": user_id.get() },
                 |row| row.get::<usize, String>(0)
             ).expect("Unable to bind parameters to query");
 
@@ -509,7 +510,7 @@ impl Database {
         member_id: UserId,
     ) -> Result<Vec<u64>, Error> {
         let mut stmt = self.db.prepare("SELECT lists.id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.user_id=? AND lists.guild_id=?")?;
-        let mut rows = stmt.query(params![member_id.as_u64(), guild_id.as_u64()])?;
+        let mut rows = stmt.query(params![member_id.get(), guild_id.get()])?;
         let mut lists = Vec::new();
         while let Some(row) = rows.next()? {
             lists.push(row.get(0)?);
@@ -521,7 +522,7 @@ impl Database {
         let mut stmt = self.db.prepare("SELECT memberships.user_id FROM lists, memberships WHERE lists.id=memberships.list_id AND memberships.list_id=?").unwrap();
         let rows = stmt
             .query_map(params![list_id], |row| {
-                row.get::<usize, u64>(0).map(|id| UserId(id))
+                row.get::<usize, u64>(0).map(|id| UserId::new(id))
             })
             .unwrap();
         rows.collect::<Result<Vec<UserId>, _>>().unwrap()
@@ -530,7 +531,7 @@ impl Database {
     pub fn add_member(&mut self, member_id: UserId, list_id: ListId) -> JoinResult {
         let a = self.db.execute(
             "INSERT INTO memberships (user_id, list_id) VALUES (?1, ?2)",
-            params![member_id.as_u64(), list_id],
+            params![member_id.get(), list_id],
         );
         match a {
             Err(Error::SqliteFailure(
@@ -555,7 +556,7 @@ impl Database {
     pub fn remove_member(&mut self, member_id: UserId, list_id: ListId) -> Result<bool, Error> {
         Ok(self.db.execute(
             "DELETE FROM memberships WHERE user_id = ?1 AND list_id = ?2",
-            params![member_id.as_u64(), list_id],
+            params![member_id.get(), list_id],
         )? > 0)
     }
     //ANCHOR role functions
@@ -569,7 +570,7 @@ impl Database {
         self.db
                 .query_row(
                     "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM role_settings WHERE role_id=?1 AND guild_id=?2",
-                    params![role_id.as_u64(), guild_id.as_u64()],
+                    params![role_id.get(), guild_id.get()],
                     |row| {
                         Ok((
                             PERMISSION::fromint(row.get::<usize, u64>(0)?),
@@ -584,7 +585,7 @@ impl Database {
     fn ensure_role_present(&mut self, guild_id: GuildId, role_id: RoleId) -> Result<(), Error> {
         self.db.execute(
             "INSERT OR IGNORE INTO role_settings (guild_id, role_id) VALUES (?1, ?2)",
-            [guild_id.as_u64(), role_id.as_u64()],
+            [guild_id.get(), role_id.get()],
         )?;
         Ok(())
     }
@@ -598,7 +599,7 @@ impl Database {
         self.ensure_role_present(guild_id, role_id)?;
         self.db.execute(
             "UPDATE role_settings SET propose_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![perm as u64, role_id.as_u64(), guild_id.as_u64()],
+            params![perm as u64, role_id.get(), guild_id.get()],
         )?;
         Ok(())
     }
@@ -613,7 +614,7 @@ impl Database {
         println!("got here, perm: {}", perm as u64);
         self.db.execute(
             "UPDATE role_settings SET ping_permission = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![perm as u64, role_id.as_u64(), guild_id.as_u64()],
+            params![perm as u64, role_id.get(), guild_id.get()],
         )?;
         Ok(())
     }
@@ -627,7 +628,7 @@ impl Database {
         self.ensure_role_present(guild_id, role_id)?;
         self.db.execute(
             "UPDATE role_settings SET ignore_gbcooldown = ?1 WHERE role_id=?2 AND guild_id=?3",
-            params![deny, role_id.as_u64(), guild_id.as_u64()],
+            params![deny, role_id.get(), guild_id.get()],
         )?;
         Ok(())
     }
@@ -643,7 +644,7 @@ impl Database {
         self.db
                 .query_row(
                     "SELECT propose_permission, ping_permission, ignore_gbcooldown FROM user_settings WHERE user_id=?1 AND guild_id=?2",
-                    params![user_id.as_u64(), guild_id.as_u64()],
+                    params![user_id.get(), guild_id.get()],
                     |row| {
                         Ok((
                             PERMISSION::fromint(row.get::<usize, u64>(0)?),
@@ -659,7 +660,7 @@ impl Database {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO user_settings (guild_id, user_id) VALUES (?1, ?2)",
-                [guild_id.as_u64(), user_id.as_u64()],
+                [guild_id.get(), user_id.get()],
             )
             .expect("malformed Sql");
     }
@@ -669,7 +670,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET propose_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![perm as u64, user_id.as_u64(), guild_id.as_u64()],
+                params![perm as u64, user_id.get(), guild_id.get()],
             )
             .expect("SQL statement malformed or SQL error");
     }
@@ -679,7 +680,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET ping_permission = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![perm as u64, user_id.as_u64(), guild_id.as_u64()],
+                params![perm as u64, user_id.get(), guild_id.get()],
             )
             .expect("SQL statement malformed or SQL error");
     }
@@ -689,7 +690,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE user_settings SET ignore_gbcooldown = ?1 WHERE user_id=?2 AND guild_id=?3",
-                params![deny, user_id.as_u64(), guild_id.as_u64()],
+                params![deny, user_id.get(), guild_id.get()],
             )
             .expect("SQL statement malformed or SQL error");
     }
@@ -700,7 +701,7 @@ impl Database {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO channel_settings (channel_id) VALUES (?1)",
-                [channel_id.as_u64()],
+                [channel_id.get()],
             )
             .expect("Malformed SQL or sql error: ");
     }
@@ -710,7 +711,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE channel_settings SET override_mentioning = ?1 WHERE channel_id = ?2",
-                params![value as u64, channel_id.as_u64()],
+                params![value as u64, channel_id.get()],
             )
             .expect("Malformed SQL or sql error: ");
     }
@@ -720,7 +721,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE channel_settings SET propose_permission = ?1 WHERE channel_id = ?2",
-                params![value as u64, channel_id.as_u64()],
+                params![value as u64, channel_id.get()],
             )
             .expect("Malformed SQL or sql error: ");
     }
@@ -730,7 +731,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE channel_settings SET public_commands = ?1 WHERE channel_id = ?2",
-                params![value, channel_id.as_u64()],
+                params![value, channel_id.get()],
             )
             .expect("Malformed SQL or sql error: ");
     }
@@ -744,7 +745,7 @@ impl Database {
         self.db
                 .query_row(
                     "SELECT public_commands, override_mentioning, propose_permission FROM channel_settings WHERE channel_id=?1",
-                    params![channel_id.as_u64()],
+                    params![channel_id.get()],
                     |row| {
                         Ok((
                             row.get::<usize, bool>(0)?,
@@ -764,7 +765,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE guilds SET general_propose = ?1 WHERE id = ?2",
-                params![value, guild_id.as_u64()],
+                params![value, guild_id.get()],
             )
             .unwrap();
     }
@@ -773,7 +774,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE guilds SET propose_timeout = ?1 WHERE id = ?2",
-                params![value, guild_id.as_u64()],
+                params![value, guild_id.get()],
             )
             .unwrap();
     }
@@ -782,7 +783,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE guilds SET propose_threshold = ?1 WHERE id = ?2",
-                params![value, guild_id.as_u64()],
+                params![value, guild_id.get()],
             )
             .unwrap();
     }
@@ -790,7 +791,7 @@ impl Database {
     pub fn get_propose_settings(&self, guild_id: GuildId) -> (bool, u64, usize) {
         self.db.query_row(
             "SELECT general_propose, propose_timeout, propose_threshold FROM guilds WHERE id = ?1",
-            params![guild_id.as_u64()],
+            params![guild_id.get()],
             |row| {
                 Ok((
                     row.get::<usize, bool>(0)?,
@@ -806,7 +807,7 @@ impl Database {
     pub fn start_proposal(
         &mut self,
         guild_id: GuildId,
-        name: &String,
+        name: &str,
         timestamp: i64,
         channel_id: ChannelId,
     ) -> Option<ListId> {
@@ -818,7 +819,7 @@ impl Database {
             self.db
                 .execute(
                     "INSERT INTO proposals (list_id, timestamp, channel_id) VALUES (?1, ?2, ?3)",
-                    params![list_id, timestamp, channel_id.as_u64()],
+                    params![list_id, timestamp, channel_id.get()],
                 )
                 .unwrap();
             return Some(list_id);
@@ -831,7 +832,7 @@ impl Database {
         self.db
             .execute(
                 "UPDATE proposals SET message_id = ?1 WHERE list_id=?2",
-                params![message_id.as_u64(), list_id],
+                params![message_id.get(), list_id],
             )
             .unwrap();
     }
@@ -865,8 +866,8 @@ impl Database {
                 |row| {
                     Ok((
                         row.get::<usize, u64>(0)?,
-                        ChannelId(row.get::<usize, u64>(1)?),
-                        MessageId(row.get::<usize, u64>(2)?),
+                        ChannelId::new(row.get::<usize, u64>(1)?),
+                        MessageId::new(row.get::<usize, u64>(2)?),
                     ))
                 },
             )
@@ -879,7 +880,7 @@ impl Database {
     }
 
     pub fn get_list_guild(&mut self, list_id: ListId) -> Result<GuildId, Error> {
-        Ok(GuildId(self.db.query_row(
+        Ok(GuildId::new(self.db.query_row(
             "SELECT guild_id FROM lists WHERE id=?1",
             params![list_id],
             |row| row.get::<usize, u64>(0),
@@ -905,15 +906,15 @@ impl Database {
                     WHERE lists.guild_id = ?1
                     GROUP BY lists.id";
         let mut stmt = self.db.prepare(lists_query).unwrap();
-        stmt.query_map(params![guild_id.as_u64()], |mf| {
+        stmt.query_map(params![guild_id.get()], |mf| {
             Ok((
                 mf.get(0)?,
                 ProposalStatus::ACTIVE(
-                    mf.get(1)?,            // name
-                    mf.get(5)?,            // votes
-                    mf.get(2)?,            // timestamp
-                    ChannelId(mf.get(3)?), // channel id
-                    MessageId(mf.get(4)?), // message id
+                    mf.get(1)?,                 // name
+                    mf.get(5)?,                 // votes
+                    mf.get(2)?,                 // timestamp
+                    ChannelId::new(mf.get(3)?), // channel id
+                    MessageId::new(mf.get(4)?), // message id
                 ),
             ))
         })
@@ -933,13 +934,13 @@ impl Database {
         let mut stmt = self.db.prepare(lists_query).unwrap();
         stmt.query_map(params![], |mf| {
             Ok((
-                GuildId(mf.get(0)?),
+                GuildId::new(mf.get(0)?),
                 ProposalStatus::ACTIVE(
-                    mf.get(1)?,            // name
-                    mf.get(5)?,            // votes
-                    mf.get(2)?,            // timestamp
-                    ChannelId(mf.get(3)?), // channel id
-                    MessageId(mf.get(4)?), // message id
+                    mf.get(1)?,                 // name
+                    mf.get(5)?,                 // votes
+                    mf.get(2)?,                 // timestamp
+                    ChannelId::new(mf.get(3)?), // channel id
+                    MessageId::new(mf.get(4)?), // message id
                 ),
             ))
         })
@@ -977,9 +978,9 @@ impl Database {
                 self.db.execute(
                         "INSERT INTO action_response (guild_id, trigger, response_channel, response_message) VALUES (?1, ?2, ?3, ?4)",
                         params![
-                            guild_id.as_u64(),
+                            guild_id.get(),
                             log_type.toint(),
-                            response_channel.as_u64(),
+                            response_channel.get(),
                             response_message
                         ],
                     )?;
@@ -988,10 +989,10 @@ impl Database {
                 self.db.execute(
                         "INSERT INTO action_response (guild_id, trigger, trigger_id, response_channel, response_message) VALUES (?1, ?2, ?3, ?4, ?5)",
                         params![
-                            guild_id.as_u64(),
+                            guild_id.get(),
                             log_type.toint(),
-                            role_id.as_u64(),
-                            response_channel.as_u64(),
+                            role_id.get(),
+                            response_channel.get(),
                             response_message
                         ],
                     )?;
@@ -1006,7 +1007,7 @@ impl Database {
                     match self.db
                         .query_row(
                             "SELECT id FROM action_response WHERE guild_id = ?1 AND trigger = ?2 AND trigger_id = ?3",
-                            params![guild_id.as_u64(), log_type.toint(), role_id.as_u64()],
+                            params![guild_id.get(), log_type.toint(), role_id.get()],
                             |row| row.get(0)
                         )
                     {
@@ -1019,7 +1020,7 @@ impl Database {
                     match self.db
                     .query_row(
                         "SELECT id FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
-                        params![guild_id.as_u64(), log_type.toint()],
+                        params![guild_id.get(), log_type.toint()],
                         |row| row.get(0)
                     )
                 {
@@ -1038,10 +1039,10 @@ impl Database {
     ) -> Result<(ChannelId, String), Error> {
         self.db.query_row(
                 "SELECT response_channel, response_message FROM action_response WHERE guild_id = ?1 AND id = ?2",
-                params![guild_id.as_u64(), log_id],
+                params![guild_id.get(), log_id],
                 |row| Ok(
-                    (ChannelId( row.get::<usize, u64>(0)?),
-                    row.get::<usize, String>(1)?,)
+                    (ChannelId::new( row.get::<usize, u64>(0)?),
+                    row.get::<usize, String>(1)?)
             ))
     }
 
@@ -1053,12 +1054,12 @@ impl Database {
                 FROM action_response \
                 WHERE guild_id = ?1";
         let mut stmt = self.db.prepare(responses_query)?;
-        let mut rows = stmt.query(params![guild_id.as_u64()])?;
+        let mut rows = stmt.query(params![guild_id.get()])?;
 
         let mut responses = Vec::new();
         while let Some(row) = rows.next()? {
             responses.push((
-                ChannelId(row.get::<usize, u64>(0)?),
+                ChannelId::new(row.get::<usize, u64>(0)?),
                 row.get::<usize, String>(1)?,
                 LOGTRIGGER::fromint(row.get::<usize, u64>(2)?, row.get::<usize, u64>(3)?),
             ));
@@ -1073,7 +1074,7 @@ impl Database {
     ) -> Result<bool, Error> {
         Ok(self.db.execute(
             "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
-            params![guild_id.as_u64(), log_type.toint(),],
+            params![guild_id.get(), log_type.toint(),],
         )? > 0)
     }
 
@@ -1091,7 +1092,7 @@ impl Database {
                         params![
                             log_id,
                             log_type.toint(),
-                            role_id.as_u64(),
+                            role_id.get(),
                             invert
                         ],
                     ).expect("Invalid SQL or sql error: ");
@@ -1140,12 +1141,12 @@ impl Database {
         if let Some(cid) = channel_id {
             self.db.execute(
                 "UPDATE guilds SET log_channel = ?1 WHERE id = ?2",
-                params![cid.as_u64(), guild_id.as_u64()],
+                params![cid.get(), guild_id.get()],
             )?;
         } else {
             self.db.execute(
                 "UPDATE guilds SET log_channel = -1 WHERE id = ?2",
-                params![guild_id.as_u64()],
+                params![guild_id.get()],
             )?;
         }
         Ok(())
@@ -1154,7 +1155,7 @@ impl Database {
     pub fn get_log_channel(&self, guild_id: GuildId) -> Result<Option<ChannelId>, Error> {
         let cid = self.db.query_row(
             "SELECT log_channel FROM guilds WHERE id = ?1",
-            params![guild_id.as_u64()],
+            params![guild_id.get()],
             |row| Ok(row.get::<usize, u64>(0)?),
         );
         match cid {

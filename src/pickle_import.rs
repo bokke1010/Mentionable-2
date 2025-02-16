@@ -103,7 +103,9 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                                     if let HashableValue::I64(restr_role_id) = restr_role_id_val {
                                         db.add_response_condition(
                                             log_id,
-                                            LOGCONDITION::HasRole(RoleId(*restr_role_id as u64)),
+                                            LOGCONDITION::HasRole(RoleId::new(
+                                                *restr_role_id as u64,
+                                            )),
                                             hr == "notHasRole",
                                         );
                                     } else {
@@ -129,7 +131,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                     (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_role_log_single(
                         db,
                         guild_id,
-                        LOGTRIGGER::RoleAdd(RoleId(*role_id as u64)),
+                        LOGTRIGGER::RoleAdd(RoleId::new(*role_id as u64)),
                         &info,
                     ),
                     _ => panic!("err"),
@@ -147,7 +149,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                     (HashableValue::I64(role_id), Value::Tuple(info)) => db_parse_role_log_single(
                         db,
                         guild_id,
-                        LOGTRIGGER::RoleRemove(RoleId(*role_id as u64)),
+                        LOGTRIGGER::RoleRemove(RoleId::new(*role_id as u64)),
                         &info,
                     ),
                     _ => panic!("err"),
@@ -162,7 +164,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
-                    db.set_role_ignore_cooldown(guild_id, RoleId(*role_id as u64), true)
+                    db.set_role_ignore_cooldown(guild_id, RoleId::new(*role_id as u64), true)
                         .unwrap();
                 } else {
                     panic!("err");
@@ -178,7 +180,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
-                    db.set_role_canping(guild_id, RoleId(*role_id as u64), PERMISSION::ALLOW)
+                    db.set_role_canping(guild_id, RoleId::new(*role_id as u64), PERMISSION::ALLOW)
                         .unwrap();
                 } else {
                     panic!("err");
@@ -194,8 +196,12 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
         if let Value::Set(roleids) = content_val {
             for role_id_val in roleids {
                 if let HashableValue::I64(role_id) = role_id_val {
-                    db.set_role_canpropose(guild_id, RoleId(*role_id as u64), PERMISSION::ALLOW)
-                        .unwrap();
+                    db.set_role_canpropose(
+                        guild_id,
+                        RoleId::new(*role_id as u64),
+                        PERMISSION::ALLOW,
+                    )
+                    .unwrap();
                 } else {
                     panic!("err");
                 }
@@ -214,7 +220,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                             for cid_val in cids {
                                 if let HashableValue::I64(cid) = cid_val {
                                     db.set_channel_mentioning(
-                                        ChannelId(*cid as u64),
+                                        ChannelId::new(*cid as u64),
                                         PERMISSION::DENY,
                                     );
                                 } else {
@@ -228,7 +234,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                             for cid_val in cids {
                                 if let HashableValue::I64(cid) = cid_val {
                                     db.set_channel_proposing(
-                                        ChannelId(*cid as u64),
+                                        ChannelId::new(*cid as u64),
                                         PERMISSION::DENY,
                                     );
                                 } else {
@@ -325,7 +331,7 @@ pub fn import_pickled(ipath: &str, gid: GuildId, database: &mut Database) {
                 }
                 for member_val in members {
                     if let HashableValue::I64(member_id) = member_val {
-                        db.add_member(UserId(*member_id as u64), list_id);
+                        db.add_member(UserId::new(*member_id as u64), list_id);
                     } else {
                         panic!("err");
                     }
