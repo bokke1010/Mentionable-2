@@ -1,6 +1,6 @@
 use serenity::{
     all::{
-        ActionRow, ActionRowComponent, AutocompleteOption, Button, ButtonKind, ButtonStyle, Command, CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse, CreateEmbedAuthor, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, EditMessage, InputTextStyle, Interaction
+        ActionRow, ActionRowComponent, AutocompleteOption, Button, ButtonKind, ButtonStyle, Command, CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse, CreateEmbedAuthor, CreateInputText, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, CreateModal, EditMessage, InputTextStyle, Interaction
     }, async_trait, builder::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     }, futures::StreamExt, http, model::{
@@ -18,7 +18,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
-    },
+    }, vec,
 };
 
 use dotenv::dotenv;
@@ -1875,7 +1875,7 @@ impl Handler {
             let (_, timeout, threshold) = x.get_propose_settings(guild_id);
             let proposals = x.get_proposals(guild_id);
             if proposals.len() == 0 {
-                embed.title("No proposals found");
+                embed = embed.title("No proposals found");
             }
             for (name, proposal) in proposals {
                 if let ProposalStatus::ACTIVE(_, votes, timestamp, channel_id, message_id) =
@@ -1885,7 +1885,7 @@ impl Handler {
                     let (hours, minutes) = (minutes / 60, minutes % 60);
 
                     if message_id == 0 {
-                        embed.field(
+                        embed = embed.field(
                             name,
                             format!(
                                 "Has {} / {} votes, {} hours and {} minutes remaining.",
@@ -1894,7 +1894,7 @@ impl Handler {
                             true,
                         );
                     } else {
-                        embed.field(
+                        embed = embed.field(
                             name,
                             format!(
                                 "Has {} / {} votes, {} hours and {} minutes remaining.\n{}",
@@ -1912,11 +1912,9 @@ impl Handler {
         }
 
         command
-            .create_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.add_embed(embed).ephemeral(true))
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true)
+            ))
             .await
             .unwrap();
     }
@@ -1964,61 +1962,53 @@ impl Handler {
         let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
             ProposalStatus::ACCEPTED(..) => {
-                embed.description("Proposal accepted");
+                embed = embed.description("Proposal accepted");
             }
             ProposalStatus::DENIED => {
                 // Doesn't happen
-                embed.description("Proposal expired");
+                embed = embed.description("Proposal expired");
             }
             ProposalStatus::REMOVED => {
                 // Won't happen because a list getting cancelled because you voted ain't fun
-                embed.description("Proposal not found");
+                embed = embed.description("Proposal not found");
             }
             ProposalStatus::ACTIVE(_, votes, ..) => {
-                embed.author(|ab| {
-                    ab.icon_url(
-                        old_embed
-                            .author
-                            .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .icon_url
-                            .as_ref()
-                            .expect("Old proposal embed malformed"),
-                    )
-                    .name(
-                        &old_embed
-                            .author
-                            .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .name,
-                    )
-                });
-                embed.title(
+                embed = embed.author(CreateEmbedAuthor::new(
+                    &old_embed
+                        .author
+                        .as_ref()
+                        .expect("Old proposal embed malformed")
+                        .name
+                ).icon_url(
+                    old_embed
+                        .author
+                        .as_ref()
+                        .expect("Old proposal embed malformed")
+                        .icon_url
+                        .as_ref()
+                        .expect("Old proposal embed malformed"),
+                ));
+                embed = embed.title(
                     old_embed
                         .title
                         .as_ref()
                         .expect("Old proposal embed malformed"),
                 );
-                embed.description(format!("Votes: {}", votes));
+                embed = embed.description(format!("Votes: {}", votes));
 
                 component
-                    .create_response(&ctx.http, |res| {
-                        res.kind(InteractionResponseType::UpdateMessage)
-                            .interaction_response_data(|data| data.set_embed(embed))
-                    })
+                    .create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(CreateInteractionResponseMessage::new().embed(embed)))
                     .await
                     .unwrap();
                 return;
             }
         }
         component
-            .create_response(&ctx.http, |res| {
-                res.kind(InteractionResponseType::UpdateMessage)
-                    .interaction_response_data(|data| {
-                        data.set_embed(embed)
-                            .set_components(serenity::builder::CreateComponents::default())
-                    })
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(embed)
+                    .components(vec![])
+            ))
             .await
             .unwrap();
     }
@@ -2056,66 +2046,34 @@ impl Handler {
     }
 
     async fn _handle_context_ping(&self, command: &CommandInteraction, ctx: &Context) {
-        let mut main_question = CreateActionRow::default();
-        main_question.create_input_text(|text| {
-            text.custom_id("top")
-                .style(InputTextStyle::Paragraph)
-                .label("Name something you like within Inverted Fate?")
+        let main_question = CreateActionRow::InputText(
+            CreateInputText::new(InputTextStyle::Paragraph, "Name something you like within Inverted Fate?", "top")
                 .value("Doesn't have to be your favorite thing, but try to be somewhat specific")
-        });
-        let mut cominter = CreateActionRow::default();
-        cominter.create_input_text(|text| {
-            text.custom_id("main")
-                .style(InputTextStyle::Paragraph)
-                .label("What do you expect from the community?")
-                .value("Mostly anything is fine, don't worry!")
-        });
-        let mut friends = CreateActionRow::default();
-        friends.create_input_text(|text| {
-            text.custom_id("side")
-                .style(InputTextStyle::Short)
-                .label("If a friend referred you, please mention them")
-        });
-        let mut cc = CreateActionRow::default();
-        cc.create_input_text(|text| {
-            text.custom_id("bottom")
-                .style(InputTextStyle::Paragraph)
-                .label("Are you a content creator?")
-                .value("Feel free to share links where applicable.")
-        });
+        );
+        let cominter = CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph, "What do you expect from the community?", "main"
+            )
+                .placeholder("Mostly anything is fine, don't worry!")
+        );
+        let friends = CreateActionRow::InputText(
+            CreateInputText::new(InputTextStyle::Short, "If a friend referred you, please mention them", "side")
+        );
+        
+        let cc = CreateActionRow::InputText(
+            CreateInputText::new(InputTextStyle::Paragraph, "Are you a content creator?", "bottom")
+                .placeholder("Feel free to share links where applicable.")
+        );
 
-        let mut other_fandoms = CreateActionRow::default();
-        other_fandoms.create_input_text(|text| {
-            text.custom_id("bottomer")
-                .style(InputTextStyle::Paragraph)
-                .label("What other interests do you have?")
+        let other_fandoms = CreateActionRow::InputText(
+            CreateInputText::new(InputTextStyle::Paragraph, "What other interests do you have?", "bottomer")
                 .value("Fandoms, games, hobbies etc. outside of undertale.")
-        });
+        );
 
         command
-            .create_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::Modal)
-                    .interaction_response_data(|modal| {
-                        modal
-                            .title("Welcome to the Inverted Fate community.")
-                            .custom_id("AAA")
-                            .content("\
-                                We would like you to answer a few questions to make sure you are here in good faith.\
-                                There are no correct or incorrect answers to these questions.\
-                                Once we have had a chance to consider your answers, you will be let into the greater community.\
-                            ")
-
-                            .components(|component| {
-                                component
-                                    .add_action_row(main_question)
-                                    .add_action_row(cominter)
-                                    .add_action_row(friends)
-                                    .add_action_row(cc)
-                                    .add_action_row(other_fandoms)
-                            })
-                    })
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Modal(CreateModal::new("AAA", "Welcome to the Inverted Fate community.")
+            .components(vec![main_question, cominter, friends, cc, other_fandoms])
+        ))
             .await
             .unwrap();
     }
@@ -2150,11 +2108,8 @@ impl Handler {
 
         let mut ref_user: Option<&User> = None;
         for field in &command.data.options {
-            if field.kind == CommandOptionType::User {
-                let resolved_value = field.resolved.as_ref().unwrap();
-                if let CommandDataOptionValue::User(ref target, _) = resolved_value {
-                    ref_user = Some(target);
-                };
+            if let CommandDataOptionValue::User(uid) = field.value {
+                ref_user = Some(&uid.to_user(&ctx.http).await.unwrap());
             }
         }
 
