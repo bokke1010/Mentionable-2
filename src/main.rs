@@ -1549,11 +1549,22 @@ impl Handler {
                     for setting in options {
                         match setting.name.as_str() {
                             "set_channel" => {
-                                if let CommandDataOptionValue::Channel(b) = setting.value {
-                                    x.set_log_channel(guild_id, Some(b)).unwrap();
+                                if let CommandDataOptionValue::Channel(channel) = setting.value {
+                                    x.set_log_channel(guild_id, Some(channel)).unwrap();
                                     embed = embed.field(
                                         "log channel",
-                                        format!("log channel set to channel with id {}", b),
+                                        format!(
+                                            "log channel set to channel {}",
+                                            command
+                                                .data
+                                                .resolved
+                                                .channels
+                                                .get(&channel)
+                                                .unwrap()
+                                                .name
+                                                .as_ref()
+                                                .unwrap_or(&"unnamed channel".to_string())
+                                        ),
                                         false,
                                     );
                                 } else {
@@ -1799,7 +1810,11 @@ impl Handler {
             }
 
             channel_id
-                .edit_message(&ctx.http, message_id, EditMessage::new().embed(embed))
+                .edit_message(
+                    &ctx.http,
+                    message_id,
+                    EditMessage::new().embed(embed).components(vec![]),
+                )
                 .await
                 .unwrap();
         }
@@ -1870,7 +1885,11 @@ impl Handler {
                 }
             }
             channel_id
-                .edit_message(&ctx.http, message_id, EditMessage::new().embed(embed))
+                .edit_message(
+                    &ctx.http,
+                    message_id,
+                    EditMessage::new().embed(embed).components(vec![]),
+                )
                 .await
                 .unwrap();
         }
@@ -2422,20 +2441,20 @@ impl Handler {
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let mut role_id = RoleId::new(0);
-            let mut channel_id = ChannelId::new(0);
+            let mut role_id = None;
+            let mut channel_id = None;
             let mut response_message = "";
             for setting in options {
                 match setting.value {
-                    CommandDataOptionValue::Role(role) => role_id = role,
-                    CommandDataOptionValue::Channel(p_channel) => channel_id = p_channel,
+                    CommandDataOptionValue::Role(role) => role_id = Some(role),
+                    CommandDataOptionValue::Channel(p_channel) => channel_id = Some(p_channel),
                     CommandDataOptionValue::String(ref string) => response_message = string,
                     _ => (),
                 }
             }
             let trigger = match name.as_str() {
-                "role_add" => LOGTRIGGER::RoleAdd(role_id),
-                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "role_add" => LOGTRIGGER::RoleAdd(role_id.unwrap()),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id.unwrap()),
                 "join_server" => LOGTRIGGER::JoinServer(),
                 _ => panic!("invalid subcommand name"),
             };
@@ -2444,7 +2463,7 @@ impl Handler {
                     if x.has_response(guild_id, trigger).is_some() {
                         message = "Automatic response with that trigger already present.";
                     } else {
-                        x.add_response(guild_id, trigger, channel_id, response_message)
+                        x.add_response(guild_id, trigger, channel_id.unwrap(), response_message)
                             .unwrap();
                         message = "Added automatic response.";
                     }
@@ -2488,28 +2507,28 @@ impl Handler {
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let mut role_id = RoleId::new(0);
-            let mut target_role_id = RoleId::new(0);
+            let mut role_id = None;
+            let mut target_role_id = None;
             let mut invert = false;
             for setting in options {
                 match (setting.name.as_str(), &setting.value) {
-                    ("role", CommandDataOptionValue::Role(role)) => role_id = role.clone(),
+                    ("role", CommandDataOptionValue::Role(role)) => role_id = Some(role.clone()),
                     ("condition", _) => (),
                     ("required_role", CommandDataOptionValue::Role(role)) => {
-                        target_role_id = role.clone()
+                        target_role_id = Some(role.clone())
                     }
                     ("invert", CommandDataOptionValue::Boolean(b)) => invert = *b,
                     _ => (),
                 }
             }
             let trigger = match name.as_str() {
-                "role_add" => LOGTRIGGER::RoleAdd(role_id),
-                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "role_add" => LOGTRIGGER::RoleAdd(role_id.unwrap()),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id.unwrap()),
                 "join_server" => LOGTRIGGER::JoinServer(),
                 _ => panic!("invalid subcommand name"),
             };
 
-            let log_condition = LOGCONDITION::HasRole(target_role_id);
+            let log_condition = LOGCONDITION::HasRole(target_role_id.unwrap());
             if let Some(id) = x.has_response(guild_id, trigger) {
                 match command.data.name.as_str() {
                     "add_auto_response_condition" => {

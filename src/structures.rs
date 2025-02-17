@@ -4,6 +4,7 @@ use std::fmt;
 
 pub type ListId = u64;
 
+#[allow(dead_code)]
 pub struct PingList {
     pub id: u64,
     pub guild_id: GuildId,
@@ -118,6 +119,7 @@ impl LOGCONDITION {
     }
 }
 
+#[allow(dead_code)]
 pub enum ProposalStatus {
     ACTIVE(ListId, usize, u64, ChannelId, MessageId), // list id, votes, timestamp, channelid, message id
     ACCEPTED(ListId),
