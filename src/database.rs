@@ -1072,10 +1072,20 @@ impl Database {
         guild_id: GuildId,
         log_type: LOGTRIGGER,
     ) -> Result<bool, Error> {
-        Ok(self.db.execute(
-            "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
-            params![guild_id.get(), log_type.toint(),],
-        )? > 0)
+        match log_type {
+            LOGTRIGGER::RoleAdd(role_id) | LOGTRIGGER::RoleRemove(role_id) => {
+                Ok(self.db.execute(
+                    "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2 AND trigger_id = ?3",
+                    params![guild_id.get(), log_type.toint(), role_id.get()],
+                )? > 0)
+            }
+            LOGTRIGGER::JoinServer() => {
+                Ok(self.db.execute(
+                    "DELETE FROM action_response WHERE guild_id = ?1 AND trigger = ?2",
+                    params![guild_id.get(), log_type.toint()],
+                )? > 0)
+            }
+        }
     }
 
     // conditions

@@ -367,8 +367,8 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                 .required(false),
             ),
             CreateCommand::new("list_auto_responses")
-            .description("Show all current automatic responses.")
-            .default_member_permissions(can_manage_messages),
+                .description("Show all current automatic responses.")
+                .default_member_permissions(can_manage_messages),
             CreateCommand::new("add_auto_response")
             .description("Add a automatic response")
             .default_member_permissions(can_manage_messages)
