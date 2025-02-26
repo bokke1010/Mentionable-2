@@ -841,7 +841,7 @@ impl Database {
 
     pub fn accept_proposal(&mut self, list_id: ListId) -> bool {
         // let transaction = self.db.transaction().unwrap();
-        if self.remove_proposal(list_id).unwrap() {
+        if self.remove_proposal(list_id).is_ok() {
             self.set_pingable(list_id, PERMISSION::NEUTRAL);
             self.set_joinable(list_id, PERMISSION::NEUTRAL);
             self.set_visible(list_id, true);

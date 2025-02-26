@@ -5,18 +5,19 @@ use serenity::{
         ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse,
         CreateEmbedAuthor, CreateInputText, CreateInteractionResponse,
         CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
-        CreateModal, EditInteractionResponse, EditMessage, GetMessages, InputTextStyle,
-        Interaction,
+        CreateModal, EditInteractionResponse, EditMessage, EmbedAuthor, GetMessages,
+        InputTextStyle, Interaction,
     },
     async_trait,
     builder::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     },
-    futures::StreamExt,
+    futures::{future::join_all, StreamExt, TryStreamExt},
     model::{
         gateway::Ready,
         guild::Member,
         id::{ChannelId, GuildId, MessageId, RoleId, UserId},
+        permissions::Permissions,
         user::User,
     },
     prelude::*,
@@ -88,7 +89,7 @@ impl Handler {
         return member
             .permissions
             .expect("This member reference has to be aquired from an interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
     }
 
     async fn send_channel(
@@ -147,7 +148,7 @@ impl Handler {
 
     async fn send_not_allowed(command: &CommandInteraction, ctx: &Context) {
         Handler::send_text(
-            "You do not have permission to use this command",
+            "You do not have permission to use this command.",
             command,
             ctx,
             true,
@@ -155,15 +156,17 @@ impl Handler {
         .await;
     }
 
+    async fn send_not_in_guild(command: &CommandInteraction, ctx: &Context) {
+        Handler::send_text("This command must be used in a server.", command, ctx, true).await;
+    }
+
     async fn handle_ping(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
-        let channel_id = command.channel_id;
-        let member = command.member.as_ref();
-        if member.is_none() {
-            Handler::send_text("You must use this command in a server.", command, ctx, true).await;
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
             return;
-        }
-        let member = member.expect("/ping not called from guild");
+        };
+        let channel_id = command.channel_id;
+        let member = command.member.as_ref().unwrap();
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
@@ -256,14 +259,21 @@ impl Handler {
         }
 
         // I hate this, but it should work well enough...
+        let all_ids = guild_id
+            .members_iter(&ctx.http)
+            .map_ok(|m| m.user.id)
+            .map(Result::ok)
+            .collect::<Vec<Option<UserId>>>()
+            .await;
+        if !all_ids.iter().all(Option::is_some) {
+            // Error retrieving members
+            return;
+        }
         let present_ids: BTreeSet<UserId> = BTreeSet::from_iter(
-            command
-                .guild_id
-                .unwrap()
-                .members_iter(&ctx.http)
-                .map(|member| member.expect("error fetching members").user.id)
-                .collect::<Vec<UserId>>()
-                .await,
+            all_ids
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<UserId>>(),
         );
 
         let members: Vec<&UserId> = members.intersection(&present_ids).collect();
@@ -344,10 +354,7 @@ impl Handler {
     }
 
     async fn autocomplete_ping(&self, autocomplete: &CommandInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
-        const SUGGESTIONS: usize = 5;
-        let member = autocomplete.member.as_ref();
-        if member.is_none() {
+        let Some(guild_id) = autocomplete.guild_id else {
             autocomplete
                 .create_response(
                     &ctx.http,
@@ -356,12 +363,13 @@ impl Handler {
                 .await
                 .expect("Failure communicating with discord api");
             return;
-        }
-        let member = member.unwrap();
+        };
+        const SUGGESTIONS: usize = 5;
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .expect("member reference did not originate from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
 
         let mut filter = "";
         for field in &autocomplete.data.options {
@@ -392,16 +400,22 @@ impl Handler {
     }
 
     async fn autocomplete_join(&self, autocomplete: &CommandInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete
-            .member
-            .as_ref()
-            .expect("/join was not triggered from within a guild");
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
-            .expect("member reference does not originate from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .unwrap()
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut userid = member.user.id;
 
         let mut filter: &str = "";
@@ -440,16 +454,22 @@ impl Handler {
     }
 
     async fn autocomplete_leave(&self, autocomplete: &CommandInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete
-            .member
-            .as_ref()
-            .expect("/leave called outside guild");
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut userid = member.user.id;
 
         let mut filter = "";
@@ -503,7 +523,6 @@ impl Handler {
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
-        // member_admin = Handler::can_manage_messages(command);
 
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
@@ -812,7 +831,7 @@ impl Handler {
         let member_admin = member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         if !member_admin {
             autocomplete
                 .create_response(
@@ -876,6 +895,8 @@ impl Handler {
                 //TODO: overflow
                 let list_names = x.get_list_names(list_id);
                 content += format!("\n{}", list_names.join(", ")).as_str();
+                // if content.len() > MESSAGE_CODE_LIMIT - 80 {
+                // }
             }
         }
 
@@ -883,40 +904,39 @@ impl Handler {
     }
 
     async fn handle_add(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
-        let member_id = command
+        let Some(CommandDataOptionValue::User(member_id)) = command
             .data
             .options
             .iter()
             .find(|x| x.name == "user")
-            .unwrap()
-            .value
-            .as_user_id()
-            .unwrap();
-        // let member_id = match target_value {
-        //     CommandDataOptionValue::User(ref target, _) => target.id,
-        //     _ => panic!("Invalid argument type"),
-        // };
-        let list_names: Vec<CommandDataOption> = command.data.options.clone();
+            .and_then(|cdo| Some(&cdo.value))
+        else {
+            Handler::send_text("Missing user parameter.", command, ctx, true).await;
+            return;
+        };
 
         let mut content = format!(
             "Attempting to add user with id {} to {} lists:",
             member_id,
-            list_names.len() - 1
+            command.data.options.len() - 1
         );
 
-        for list_name in list_names {
+        for list_name in command.data.options.iter() {
             if list_name.name == "user" {
                 continue;
             };
             let list_name = list_name.value.as_str().unwrap();
             match self
-                .add_member(guild_id, list_name, member_id, true, ctx)
+                .add_member(guild_id, list_name, *member_id, true, ctx)
                 .await
             {
                 JoinResult::AlreadyMember => {
@@ -945,7 +965,10 @@ impl Handler {
     }
 
     async fn handle_kick(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
@@ -1103,7 +1126,10 @@ impl Handler {
     }
 
     async fn handle_list(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let mut page: i64 = 0;
         let mut filter: String = "".to_string();
         for option in command.data.options.iter() {
@@ -1157,11 +1183,14 @@ impl Handler {
     }
 
     async fn handle_configure(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
 
         let mut embed = CreateEmbed::default();
 
@@ -1590,7 +1619,16 @@ impl Handler {
     }
 
     async fn autocomplete_configure(&self, autocomplete: &CommandInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
         let member = autocomplete
             .member
@@ -1599,7 +1637,7 @@ impl Handler {
         let member_admin = member
             .permissions
             .expect("Member reference not from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut filter = "";
         let field = autocomplete.data.options.iter().find(|p| p.name == "list");
         if field.is_none() {
@@ -1642,9 +1680,10 @@ impl Handler {
     async fn handle_invalid(&self, _command: &CommandInteraction) {}
 
     async fn handle_propose(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command
-            .guild_id
-            .expect("/propose called from outside guild");
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let channel_id = command.channel_id;
         let name = command.data.options.iter().find(|p| p.name == "name");
         if name.is_none() {
@@ -1690,8 +1729,8 @@ impl Handler {
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
                 proposal_id = x.start_proposal(guild_id, name, timestamp, channel_id);
-                if proposal_id != None {
-                    x.vote_proposal(proposal_id.unwrap(), member.user.id);
+                if let Some(pid) = proposal_id {
+                    x.vote_proposal(pid, member.user.id);
                 }
             }
         } else {
@@ -1700,7 +1739,11 @@ impl Handler {
 
         let mut embed = CreateEmbed::default();
 
-        if proposal_id != None && override_canpropose != PERMISSION::DENY {
+        if override_canpropose == PERMISSION::DENY {
+            embed = embed
+                .title("You do not have permission to use /propose here.")
+                .color((255, 0, 0));
+        } else if let Some(pid) = proposal_id {
             embed = embed
                 .title(format!("A new list has been proposed: {}", name))
                 .author(
@@ -1709,11 +1752,11 @@ impl Handler {
                 )
                 .color((31, 127, 255));
 
-            let button = CreateButton::new(proposal_id.unwrap().to_string())
+            let button = CreateButton::new(pid.to_string())
                 .label("Vote")
                 .style(ButtonStyle::Secondary);
             let action_row = CreateActionRow::Buttons(vec![button]);
-            command
+            let prop_response = command
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
@@ -1722,33 +1765,29 @@ impl Handler {
                             .components(vec![action_row]),
                     ),
                 )
-                .await
-                .unwrap();
-            let smes = command.get_response(&ctx.http).await.unwrap();
-            let message_id = smes.id;
-            if let Ok(mut x) = db.clone().lock() {
-                x.complete_proposal(proposal_id.unwrap(), message_id); //FIXME: dunno what's wrong
-            }
+                .await;
+            if prop_response.is_ok() {
+                let smes = command.get_response(&ctx.http).await.unwrap();
+                let message_id = smes.id;
+                if let Ok(mut x) = db.clone().lock() {
+                    x.complete_proposal(pid, message_id);
+                }
+            } // Log here
+            return;
         } else {
-            if override_canpropose == PERMISSION::DENY {
-                embed = embed
-                    .title("You do not have permission to use /propose here.")
-                    .color((255, 0, 0));
-            } else {
-                embed = embed.title("This list already exists").color((0, 255, 0));
-            }
-            command
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .add_embed(embed)
-                            .ephemeral(true),
-                    ),
-                )
-                .await
-                .unwrap();
+            embed = embed.title("This list already exists").color((0, 255, 0));
         }
+        command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .add_embed(embed)
+                        .ephemeral(true),
+                ),
+            )
+            .await
+            .ok();
     }
 
     async fn handle_cancel_proposal(&self, command: &CommandInteraction, ctx: &Context) {
@@ -1756,40 +1795,34 @@ impl Handler {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
+        let mut proposal_data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
-            if message.author.id == ctx.cache.current_user().id {
-                match &message.components[..] {
-                    [ActionRow {
-                        components: comps, ..
-                    }] => {
-                        if let ActionRowComponent::Button(b) = &comps[0] {
-                            if let Button {
-                                kind: _,
-                                data: ButtonKind::NonLink { custom_id, .. },
-                                label,
-                                ..
-                            } = b
-                            {
-                                if label.as_ref().unwrap() != "Vote" {
-                                    break;
-                                }
-                                data = Some((
-                                    custom_id.parse::<u64>().unwrap(),
-                                    message.id,
-                                    message.channel_id,
-                                ));
-                                break;
-                            }
-                        }
+            if message.author.id != ctx.cache.current_user().id {
+                continue;
+            }
+            if let [ActionRow {
+                components: comps, ..
+            }] = &message.components[..]
+            {
+                if let ActionRowComponent::Button(Button {
+                    kind: _,
+                    data: ButtonKind::NonLink { custom_id, .. },
+                    label: Some(label),
+                    ..
+                }) = &comps[0]
+                {
+                    if label != "Vote" {
+                        break;
+                    } else if let Ok(cid) = custom_id.parse::<u64>() {
+                        proposal_data = Some((cid, message.id, message.channel_id));
+                        break;
                     }
-                    _ => (),
                 }
             }
         }
 
-        if let Some((list_id, message_id, channel_id)) = data {
+        if let Some((list_id, message_id, channel_id)) = proposal_data {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data
                 .get_mut::<DB>()
@@ -1798,8 +1831,12 @@ impl Handler {
             let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
                 if x.remove_proposal(list_id).unwrap() {
-                    x.remove_list(list_id).unwrap();
-                    embed = embed.title("Voting cancelled");
+                    if x.remove_list(list_id).is_ok() {
+                        embed = embed.title("Voting cancelled");
+                    } else {
+                        embed = embed.title("Proposal cancelled, something went wrong???");
+                        // Log this
+                    }
                 } else {
                     if x.get_list_exists(list_id) {
                         embed = embed.title("Proposal already accepted");
@@ -1833,40 +1870,34 @@ impl Handler {
             return;
         }
 
-        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
+        let mut proposal_data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
-            if message.author.id == ctx.cache.current_user().id {
-                match &message.components[..] {
-                    [ActionRow {
-                        components: comps, ..
-                    }] => {
-                        if let ActionRowComponent::Button(b) = &comps[0] {
-                            if let Button {
-                                kind: _,
-                                data: ButtonKind::NonLink { custom_id, .. },
-                                label,
-                                ..
-                            } = b
-                            {
-                                if label.as_ref().unwrap() != "Vote" {
-                                    break;
-                                }
-                                data = Some((
-                                    custom_id.parse::<u64>().unwrap(),
-                                    message.id,
-                                    message.channel_id,
-                                ));
-                                break;
-                            }
-                        }
+            if message.author.id != ctx.cache.current_user().id {
+                continue;
+            }
+            if let [ActionRow {
+                components: comps, ..
+            }] = &message.components[..]
+            {
+                if let ActionRowComponent::Button(Button {
+                    kind: _,
+                    data: ButtonKind::NonLink { custom_id, .. },
+                    label: Some(label),
+                    ..
+                }) = &comps[0]
+                {
+                    if label != "Vote" {
+                        break;
+                    } else if let Ok(cid) = custom_id.parse::<u64>() {
+                        proposal_data = Some((cid, message.id, message.channel_id));
+                        break;
                     }
-                    _ => (),
                 }
             }
         }
 
-        if let Some((list_id, message_id, channel_id)) = data {
+        if let Some((list_id, message_id, channel_id)) = proposal_data {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data
                 .get_mut::<DB>()
@@ -1913,27 +1944,33 @@ impl Handler {
         let mut replies: Vec<(ChannelId, MessageId, bool)> = vec![];
         if let Ok(mut x) = db.clone().lock() {
             for (guild_id, proposal) in x.get_bot_proposals() {
-                if let ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id) =
+                let ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id) =
                     proposal
-                {
-                    let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
-                    if votes >= vote_threshold {
-                        x.accept_proposal(list_id);
-                        if channel_id != 0 && message_id != 0 {
-                            replies.push((channel_id, message_id, true));
-                        }
-                    } else if timestamp + vote_timeout <= now {
-                        x.remove_proposal(list_id).unwrap();
-                        x.remove_list(list_id).unwrap();
-                        if channel_id != 0 && message_id != 0 {
-                            replies.push((channel_id, message_id, false));
-                        }
+                else {
+                    continue;
+                };
+                let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
+                if votes >= vote_threshold {
+                    x.accept_proposal(list_id);
+                    if channel_id != 0 && message_id != 0 {
+                        replies.push((channel_id, message_id, true));
                     }
+                } else if timestamp + vote_timeout <= now {
+                    x.remove_proposal(list_id).unwrap();
+                    x.remove_list(list_id).unwrap();
+                    if channel_id != 0 && message_id != 0 {
+                        replies.push((channel_id, message_id, false));
+                    }
+                }
+                // We'd rather wait a little longer than reach a rate limit.
+                if replies.len() >= 10 {
+                    break;
                 }
             }
         }
 
-        //TODO: this is lot of potential awaits, actually using async might be nice?
+        let mut awaits = vec![];
+        let mut more_awaits = vec![];
         for (channel_id, message_id, accepted) in replies {
             let reference =
                 serenity::model::prelude::MessageReference::from((channel_id, message_id));
@@ -1942,20 +1979,31 @@ impl Handler {
             } else {
                 "Proposal timed out"
             };
-            Handler::send_channel(new_message, channel_id, ctx, false, Some(reference)).await;
+            awaits.push(Handler::send_channel(
+                new_message,
+                channel_id,
+                ctx,
+                false,
+                Some(reference),
+            ));
             let mut embed = CreateEmbed::default();
 
             embed = embed.description(new_message);
-            channel_id
-                .edit_message(&ctx.http, message_id, EditMessage::new().embed(embed))
-                .await
-                .unwrap();
-            // Cannot be an unwrap, what if the message was deleted?
+            more_awaits.push(channel_id.edit_message(
+                &ctx.http,
+                message_id,
+                EditMessage::new().embed(embed),
+            ));
         }
+        join_all(awaits).await;
+        join_all(more_awaits).await;
     }
 
     async fn handle_list_proposals(&self, command: &CommandInteraction, ctx: &Context) {
-        let guild_id = command.guild_id.unwrap();
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -2014,7 +2062,8 @@ impl Handler {
                 ),
             )
             .await
-            .unwrap();
+            .ok();
+        // What to do if not ok?
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
@@ -2024,21 +2073,20 @@ impl Handler {
             .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            match x.get_proposal_data(list_id) {
-                ProposalStatus::ACTIVE(_, votes, timestamp, t1, t2) => {
-                    let guild_id = x.get_list_guild(list_id).unwrap();
-                    let (_, _, vote_threshold) = x.get_propose_settings(guild_id);
-                    if votes >= vote_threshold {
-                        x.accept_proposal(list_id);
-                        return ProposalStatus::ACCEPTED(list_id);
-                    }
-                    // Do not remove proposals when voting for social reasons?
-                    return ProposalStatus::ACTIVE(list_id, votes, timestamp, t1, t2);
-                }
-                a => return a,
+            let ProposalStatus::ACTIVE(_, votes, timestamp, t1, t2) = x.get_proposal_data(list_id)
+            else {
+                return ProposalStatus::REMOVED;
             };
+            let guild_id = x.get_list_guild(list_id).unwrap();
+            let (_, _, vote_threshold) = x.get_propose_settings(guild_id);
+            if votes >= vote_threshold {
+                x.accept_proposal(list_id);
+                return ProposalStatus::ACCEPTED(list_id);
+            }
+            // Do not remove proposals when voting for social reasons?
+            return ProposalStatus::ACTIVE(list_id, votes, timestamp, t1, t2);
         }
-        panic!("could not get db access");
+        ProposalStatus::REMOVED
     }
 
     async fn propose_vote_from_component(&self, component: &ComponentInteraction, ctx: &Context) {
@@ -2071,29 +2119,20 @@ impl Handler {
                 embed = embed.description("Proposal not found");
             }
             ProposalStatus::ACTIVE(_, votes, ..) => {
-                embed = embed.author(
-                    CreateEmbedAuthor::new(
-                        &old_embed
-                            .author
-                            .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .name,
-                    )
-                    .icon_url(
-                        old_embed
-                            .author
-                            .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .icon_url
-                            .as_ref()
-                            .expect("Old proposal embed malformed"),
-                    ),
-                );
+                if let Some(EmbedAuthor {
+                    name,
+                    icon_url: Some(furl),
+                    ..
+                }) = old_embed.author.as_ref()
+                {
+                    let author = CreateEmbedAuthor::new(name).icon_url(furl);
+                    embed = embed.author(author);
+                }
                 embed = embed.title(
                     old_embed
                         .title
                         .as_ref()
-                        .expect("Old proposal embed malformed"),
+                        .unwrap_or(&"Missing proposal title".to_string()),
                 );
                 embed = embed.description(format!("Votes: {}", votes));
 
@@ -2105,7 +2144,8 @@ impl Handler {
                         ),
                     )
                     .await
-                    .unwrap();
+                    .ok();
+                // Again, log errors here
                 return;
             }
         }
@@ -2119,7 +2159,8 @@ impl Handler {
                 ),
             )
             .await
-            .unwrap();
+            .ok();
+        // Again, log errors here
     }
 
     async fn check_triggers(
@@ -2208,6 +2249,12 @@ impl Handler {
     }
 
     async fn handle_log_purge(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
+        // Now that guild presence is confirmed we may unwrap some things...
+
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
@@ -2218,7 +2265,6 @@ impl Handler {
             return;
         }
 
-        let guild_id = command.guild_id.unwrap();
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -2242,11 +2288,20 @@ impl Handler {
             }
         }
 
-        let mut messages = command
+        let Ok(mut messages) = command
             .channel_id
             .messages(&ctx.http, GetMessages::new().limit(25))
             .await
-            .unwrap();
+        else {
+            Handler::send_text(
+                "Failed to retrieve recent messages, try again later.",
+                command,
+                ctx,
+                true,
+            )
+            .await;
+            return;
+        };
         messages.reverse();
 
         let mut select_menu_options: Vec<CreateSelectMenuOption> = Vec::new();
@@ -2296,7 +2351,8 @@ impl Handler {
                 ),
             )
             .await
-            .unwrap();
+            .ok();
+        // Again, log errors here
     }
 
     async fn process_log_purge(&self, component: &ComponentInteraction, ctx: &Context) {
@@ -2304,7 +2360,7 @@ impl Handler {
         if !member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES)
+            .contains(Permissions::MANAGE_MESSAGES)
         {
             component.defer(&ctx.http).await.unwrap();
             return;
@@ -2317,8 +2373,7 @@ impl Handler {
             .expect("Could not find database in bot data");
         let res_cid: ChannelId;
         if let Ok(x) = db.clone().lock() {
-            let so = x.get_log_channel(guild_id).unwrap();
-            res_cid = match so {
+            res_cid = match x.get_log_channel(guild_id).unwrap() {
                 Some(cid) => cid,
                 None => return,
             }
@@ -2384,11 +2439,14 @@ impl Handler {
     }
 
     async fn handle_list_auto_response(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
         let mut embed = CreateEmbed::default();
 
         let data = ctx.data.write().await;
@@ -2416,15 +2474,18 @@ impl Handler {
                 ),
             )
             .await
-            .unwrap();
+            .ok();
     }
 
     async fn handle_auto_response(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
 
         let message: &str;
 
