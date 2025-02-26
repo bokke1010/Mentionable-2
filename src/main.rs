@@ -266,7 +266,13 @@ impl Handler {
             .collect::<Vec<Option<UserId>>>()
             .await;
         if !all_ids.iter().all(Option::is_some) {
-            // Error retrieving members
+            Handler::send_text(
+                "A problem occured retrieving guild members, try again later.",
+                command,
+                ctx,
+                true,
+            )
+            .await;
             return;
         }
         let present_ids: BTreeSet<UserId> = BTreeSet::from_iter(
@@ -2547,11 +2553,14 @@ impl Handler {
     }
 
     async fn handle_auto_response_condition(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
 
         let message: &str;
 
