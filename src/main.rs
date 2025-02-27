@@ -1091,20 +1091,19 @@ impl Handler {
             embed = embed.color((127, 255, 160)).title(format!(
                 "Showing lists {}-{} out of {}:",
                 page_selection.0 + 1,
-                page_selection.1 + 1,
+                page_selection.1,
                 maxlists
             ));
-            for list in visible_lists {
-                embed = embed.field(
-                    list.0,
-                    if list.1.is_empty() {
-                        "-".to_string()
-                    } else {
-                        list.1
-                    },
-                    false,
-                );
-            }
+            embed = embed.description(
+                visible_lists
+                    .iter()
+                    .map(|x| match x.1.as_str() {
+                        "" => format!("- {}", x.0),
+                        _ => format!("- {}\n    {}", x.0, x.1),
+                    })
+                    .collect::<Vec<String>>()
+                    .join("\n"),
+            );
             succes = true;
         }
 
@@ -1692,11 +1691,20 @@ impl Handler {
         };
         let channel_id = command.channel_id;
         let name = command.data.options.iter().find(|p| p.name == "name");
-        if name.is_none() {
+        let Some(CommandDataOption {
+            value: CommandDataOptionValue::String(name),
+            ..
+        }) = name
+        else {
             Handler::send_text("No list name was given.", command, ctx, true).await;
             return;
+        };
+        let name = name.replace('#', "\\#").replace('\n', "");
+        // Exclude _, *, #
+        if name.len() > 80 {
+            Handler::send_text("List name is too long.", command, ctx, true).await;
+            return;
         }
-        let name = name.unwrap().value.as_str().unwrap();
 
         let mut proposal_id: Option<u64> = None;
         let as_admin = Handler::can_manage_messages(command);
@@ -1734,7 +1742,7 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, name, timestamp, channel_id);
+                proposal_id = x.start_proposal(guild_id, &name, timestamp, channel_id);
                 if let Some(pid) = proposal_id {
                     x.vote_proposal(pid, member.user.id);
                 }
@@ -2109,8 +2117,6 @@ impl Handler {
             }
         }
 
-        let old_embed = &component.message.embeds[0];
-
         let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
             ProposalStatus::ACCEPTED(..) => {
@@ -2125,21 +2131,27 @@ impl Handler {
                 embed = embed.description("Proposal not found");
             }
             ProposalStatus::ACTIVE(_, votes, ..) => {
-                if let Some(EmbedAuthor {
-                    name,
-                    icon_url: Some(furl),
-                    ..
-                }) = old_embed.author.as_ref()
-                {
-                    let author = CreateEmbedAuthor::new(name).icon_url(furl);
-                    embed = embed.author(author);
+                if component.message.embeds.len() > 0 {
+                    // Embed not removed
+                    let old_embed = &component.message.embeds[0];
+                    if let Some(EmbedAuthor {
+                        name,
+                        icon_url: Some(furl),
+                        ..
+                    }) = old_embed.author.as_ref()
+                    {
+                        let author = CreateEmbedAuthor::new(name).icon_url(furl);
+                        embed = embed.author(author);
+                    }
+                    embed = embed.title(
+                        old_embed
+                            .title
+                            .as_ref()
+                            .unwrap_or(&"Missing proposal title".to_string()),
+                    );
+                } else {
+                    embed = embed.title("Someone removed this embed, shame on them!");
                 }
-                embed = embed.title(
-                    old_embed
-                        .title
-                        .as_ref()
-                        .unwrap_or(&"Missing proposal title".to_string()),
-                );
                 embed = embed.description(format!("Votes: {}", votes));
 
                 component
