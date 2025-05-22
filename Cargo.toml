@@ -9,8 +9,6 @@ edition = "2021"
 serenity = { version = "0.11.5", default-features = false, features = ["builder", "cache", "collector", "client", "gateway", "rustls_backend", "model"] }
 tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread"] }
 rusqlite = { version = "0.27.0", features = ["bundled"] }
-serde = {}
-serde_json = {}
 serde-pickle = { version = "1.1.1" }
 dotenv = "0.15.0"
 
