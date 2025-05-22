@@ -248,6 +248,9 @@ impl Handler {
                     invalid_lists.push((list_name.to_string(), ListInvalidReasons::DoesNotExist));
                 }
             }
+        } else {
+            Handler::send_text("Database access error, contact bokke1010 and await a bot restart.", command, ctx, true).await;
+            return;
         }
 
         // I hate this, but it should work well enough...
