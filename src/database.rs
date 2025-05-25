@@ -113,7 +113,7 @@ impl Database {
                 list_id             INTEGER PRIMARY KEY REFERENCES lists(id), \
                 timestamp           INTEGER NOT NULL, \
                 channel_id          INTEGER NOT NULL DEFAULT 0, \
-                message_id          INTEGER NOT NULL DEFAULT 0 );\n";
+                message_id          INTEGER NOT NULL DEFAULT 0 );";
         self.db.execute_batch(statement).expect("Malformed SQL")
     }
 
