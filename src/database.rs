@@ -217,7 +217,7 @@ impl Database {
                 "UPDATE lists SET ping_permission = ?1 WHERE id = ?2",
                 params![pingable as u64, list_id],
             )
-            .unwrap()
+            .unwrap() // Update fails for violated restrictions or arithmetic errors
             > 0
     }
 
@@ -311,7 +311,8 @@ impl Database {
 
     //Getters
 
-    pub fn get_list_permissions(&self, list_id: ListId) -> (i64, PERMISSION, PERMISSION) {
+    pub fn get_list_permissions(&self, list_id: ListId) -> Option<(i64, PERMISSION, PERMISSION)> {
+        // Requires the list to exist, panics otherwise
         self.db
             .query_row(
                 "SELECT cooldown, join_permission, ping_permission FROM lists WHERE id=?1",
@@ -324,6 +325,7 @@ impl Database {
                     ))
                 },
             )
+            .optional()
             .unwrap()
     }
 
@@ -343,7 +345,7 @@ impl Database {
             )
             .optional()
             .expect("Malformed SQL statement")
-            != None
+            .is_some()
     }
 
     pub fn get_list_names(&mut self, list_id: ListId) -> Vec<String> {
@@ -383,7 +385,7 @@ impl Database {
         while let Some(row) = rows.next()? {
             lists.push(PingList {
                 id: row.get::<usize, u64>(0)?,
-                guild_id: guild_id,
+                guild_id,
                 description: row.get::<usize, String>(1)?,
                 visible: row.get::<usize, bool>(2)?,
                 cooldown: row.get::<usize, i64>(5)?,

@@ -233,7 +233,7 @@ impl Handler {
                 if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
                     let last_time = local.entry(list_id).or_insert(0);
                     let (mut list_cooldown, _, list_ping_permission) =
-                        x.get_list_permissions(list_id);
+                        x.get_list_permissions(list_id).unwrap();
                     if list_cooldown == -1 {
                         list_cooldown = pingcooldown as i64;
                     }
@@ -533,7 +533,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
             if let Some(list_id) = res_list_id {
-                let (_, list_join_permission, _) = x.get_list_permissions(list_id);
+                let (_, list_join_permission, _) = x.get_list_permissions(list_id).unwrap();
                 if list_join_permission == PERMISSION::DENY && !as_admin {
                     return JoinResult::MissingPerms;
                 }
@@ -560,7 +560,7 @@ impl Handler {
 
         if let Ok(mut x) = db.clone().lock() {
             if let Some(list_id) = x.get_list_id_by_name(list_name, guild_id) {
-                let (_, list_join_permission, _) = x.get_list_permissions(list_id);
+                let (_, list_join_permission, _) = x.get_list_permissions(list_id).unwrap();
                 if list_join_permission == PERMISSION::DENY && !as_admin {
                     return JoinResult::MissingPerms;
                 }
