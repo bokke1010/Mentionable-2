@@ -1,25 +1,23 @@
 use serenity::{
+    all::{
+        ActionRow, ActionRowComponent, ApplicationId, Button, ButtonKind, ButtonStyle,
+        CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType,
+        ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse,
+        CreateEmbedAuthor, CreateInputText, CreateInteractionResponse,
+        CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
+        CreateModal, EditInteractionResponse, EditMessage, EmbedAuthor, GetMessages,
+        InputTextStyle, Interaction,
+    },
     async_trait,
     builder::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     },
-    futures::StreamExt,
+    futures::{future::join_all, StreamExt, TryStreamExt},
     model::{
-        application::{
-            command::CommandOptionType,
-            component::{ActionRow, ActionRowComponent, ButtonStyle, InputTextStyle},
-            interaction::{
-                application_command::{
-                    ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
-                },
-                autocomplete::AutocompleteInteraction,
-                message_component::MessageComponentInteraction,
-                Interaction, InteractionResponseType,
-            },
-        },
         gateway::Ready,
         guild::Member,
         id::{ChannelId, GuildId, MessageId, RoleId, UserId},
+        permissions::Permissions,
         user::User,
     },
     prelude::*,
@@ -33,6 +31,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    vec,
 };
 
 use dotenv::dotenv;
@@ -82,7 +81,7 @@ struct Handler {
 }
 
 impl Handler {
-    fn can_manage_messages(command: &ApplicationCommandInteraction) -> bool {
+    fn can_manage_messages(command: &CommandInteraction) -> bool {
         let member = command
             .member
             .as_ref()
@@ -90,7 +89,7 @@ impl Handler {
         return member
             .permissions
             .expect("This member reference has to be aquired from an interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
     }
 
     async fn send_channel(
@@ -100,62 +99,74 @@ impl Handler {
         ephemeral: bool,
         reference: Option<serenity::model::prelude::MessageReference>,
     ) {
+        let flags = if ephemeral {
+            serenity::model::prelude::MessageFlags::EPHEMERAL
+        } else {
+            serenity::model::prelude::MessageFlags::empty()
+        };
+        let mut mesg = CreateMessage::new().content(text).flags(flags);
+        if let Some(reference) = reference {
+            mesg = mesg.reference_message(reference);
+        }
         channel_id
-            .send_message(&ctx.http, |message| {
-                let flags = if ephemeral {
-                    serenity::model::prelude::MessageFlags::EPHEMERAL
-                } else {
-                    serenity::model::prelude::MessageFlags::empty()
-                };
-                message.content(text).flags(flags);
-                if let Some(reference) = reference {
-                    message.reference_message(reference);
-                }
-                message
-            })
+            .send_message(&ctx.http, mesg)
             .await
             .expect("Failed to send text response, see error for details.");
     }
 
-    async fn send_text(
+    async fn send_text(text: &str, command: &CommandInteraction, ctx: &Context, ephemeral: bool) {
+        // Can fail if message is too long.
+        command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(text)
+                        .ephemeral(ephemeral),
+                ),
+            )
+            .await
+            .expect("Failed to send text response, see error for details.");
+    }
+    async fn send_followup(
         text: &str,
-        command: &ApplicationCommandInteraction,
+        command: &CommandInteraction,
         ctx: &Context,
         ephemeral: bool,
     ) {
         // Can fail if message is too long.
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text).ephemeral(ephemeral))
-            })
+            .create_followup(
+                &ctx.http,
+                CreateInteractionResponseFollowup::new()
+                    .content(text)
+                    .ephemeral(ephemeral),
+            )
             .await
             .expect("Failed to send text response, see error for details.");
     }
 
-    async fn send_not_allowed(command: &ApplicationCommandInteraction, ctx: &Context) {
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message
-                            .content("You do not have permission to use this command")
-                            .ephemeral(true)
-                    })
-            })
-            .await
-            .expect("Failed to send text response.");
+    async fn send_not_allowed(command: &CommandInteraction, ctx: &Context) {
+        Handler::send_text(
+            "You do not have permission to use this command.",
+            command,
+            ctx,
+            true,
+        )
+        .await;
     }
 
-    async fn handle_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+    async fn send_not_in_guild(command: &CommandInteraction, ctx: &Context) {
+        Handler::send_text("This command must be used in a server.", command, ctx, true).await;
+    }
+
+    async fn handle_ping(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let channel_id = command.channel_id;
-        let member = command
-            .member
-            .as_ref()
-            .expect("/ping not called from guild");
+        let member = command.member.as_ref().unwrap();
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
@@ -216,9 +227,6 @@ impl Handler {
             for list_name in &list_names {
                 let list_name = list_name
                     .value
-                    .as_ref()
-                    .expect("Invalid /ping definition, should not be subcommand");
-                let list_name = list_name
                     .as_str()
                     .expect("Invalid /ping definition, should be string type");
 
@@ -251,14 +259,27 @@ impl Handler {
         }
 
         // I hate this, but it should work well enough...
+        let all_ids = guild_id
+            .members_iter(&ctx.http)
+            .map_ok(|m| m.user.id)
+            .map(Result::ok)
+            .collect::<Vec<Option<UserId>>>()
+            .await;
+        if !all_ids.iter().all(Option::is_some) {
+            Handler::send_text(
+                "A problem occured retrieving guild members, try again later.",
+                command,
+                ctx,
+                true,
+            )
+            .await;
+            return;
+        }
         let present_ids: BTreeSet<UserId> = BTreeSet::from_iter(
-            command
-                .guild_id
-                .unwrap()
-                .members_iter(&ctx.http)
-                .map(|member| member.expect("error fetching members").user.id)
-                .collect::<Vec<UserId>>()
-                .await,
+            all_ids
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<UserId>>(),
         );
 
         let members: Vec<&UserId> = members.intersection(&present_ids).collect();
@@ -279,9 +300,6 @@ impl Handler {
                 for list_name in &list_names {
                     let list_name = list_name
                         .value
-                        .as_ref()
-                        .expect("Invalid /ping definition, should not be subcommand");
-                    let list_name = list_name
                         .as_str()
                         .expect("Invalid /ping definition, should be string type");
                     content += list_name;
@@ -298,8 +316,7 @@ impl Handler {
                             Handler::send_text(&content, command, ctx, false).await;
                             first_message = false;
                         } else {
-                            Handler::send_channel(&content, command.channel_id, ctx, false, None)
-                                .await;
+                            Handler::send_followup(&content, command, ctx, false).await;
                         }
                         content.clear();
                     }
@@ -338,31 +355,32 @@ impl Handler {
         if first_message {
             Handler::send_text(&content, command, ctx, ephemeral).await;
         } else {
-            Handler::send_channel(&content, command.channel_id, ctx, false, None).await;
+            Handler::send_followup(&content, command, ctx, false).await;
         }
     }
 
-    async fn autocomplete_ping(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+    async fn autocomplete_ping(&self, autocomplete: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete
-            .member
-            .as_ref()
-            .expect("/ping used outside guild");
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .expect("member reference did not originate from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
 
         let mut filter = "";
         for field in &autocomplete.data.options {
-            if field.focused && field.kind == CommandOptionType::String {
-                filter = field
-                    .value
-                    .as_ref()
-                    .expect("/ping definition incorrect, should not contain subcommands")
-                    .as_str()
-                    .expect("This must be a string");
+            if let CommandDataOptionValue::Autocomplete { kind: _, ref value } = field.value {
+                filter = value;
             }
         }
         let mut aliases: Vec<String> = Vec::new();
@@ -375,51 +393,49 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
         }
+
+        let mut resp = CreateAutocompleteResponse::new();
+        for list in aliases {
+            resp = resp.add_string_choice(&list, &list);
+        }
+
         autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
             .await
             .expect("Failure communicating with discord api");
     }
 
-    async fn autocomplete_join(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+    async fn autocomplete_join(&self, autocomplete: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete
-            .member
-            .as_ref()
-            .expect("/join was not triggered from within a guild");
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
-            .expect("member reference does not originate from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .unwrap()
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut userid = member.user.id;
 
-        let mut filter = "";
+        let mut filter: &str = "";
         for field in &autocomplete.data.options {
-            if field.kind == CommandOptionType::User {
-                let resolved_value = field
-                    .resolved
-                    .as_ref()
-                    .expect("user field does not contain value?");
-                userid = match resolved_value {
-                    CommandDataOptionValue::User(ref target, _) => target.id,
-                    _ => panic!("Invalid argument type"),
-                };
+            if let CommandDataOptionValue::User(uid) = field.value {
+                userid = uid;
             }
-            if field.focused && field.kind == CommandOptionType::String {
-                filter = field
-                    .value
-                    .as_ref()
-                    .expect("Filter field does not contain value?")
-                    .as_str()
-                    .expect("string could not be interpreted as string");
+            if let CommandDataOptionValue::Autocomplete { kind, ref value } = field.value {
+                if kind == CommandOptionType::String {
+                    filter = value;
+                }
             }
         }
+
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
@@ -431,44 +447,46 @@ impl Handler {
             aliases =
                 x.get_list_joinable_by_search(guild_id, userid, SUGGESTIONS, filter, member_admin);
         }
+
+        let mut resp = CreateAutocompleteResponse::new();
+        for list in aliases {
+            resp = resp.add_string_choice(&list, &list);
+        }
+
         autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
             .await
-            .expect("Discord api error as follows: ");
+            .expect("Failure communicating with discord api");
     }
 
-    async fn autocomplete_leave(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+    async fn autocomplete_leave(&self, autocomplete: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
-        let member = autocomplete
-            .member
-            .as_ref()
-            .expect("/leave called outside guild");
+        let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut userid = member.user.id;
 
         let mut filter = "";
         for field in &autocomplete.data.options {
-            if field.kind == CommandOptionType::User {
-                let id_string = field.value.as_ref().expect("Field does not contain value");
-                userid = UserId {
-                    0: id_string
-                        .as_str()
-                        .expect("userid cannot be parsed as string")
-                        .parse::<u64>()
-                        .expect("id string cannot be parsed as u64"),
-                };
+            if let CommandDataOptionValue::User(uid) = field.value {
+                userid = uid;
             }
-            if field.focused && field.kind == CommandOptionType::String {
-                filter = field.value.as_ref().unwrap().as_str().unwrap(); // okay if it contains a string
+            if let CommandDataOptionValue::Autocomplete { kind, ref value } = field.value {
+                if kind == CommandOptionType::String {
+                    filter = value;
+                }
             }
         }
         let mut aliases: Vec<String> = Vec::new();
@@ -487,15 +505,16 @@ impl Handler {
                 member_admin,
             );
         }
+
+        let mut resp = CreateAutocompleteResponse::new();
+        for list in aliases {
+            resp = resp.add_string_choice(&list, &list);
+        }
+
         autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
             .await
-            .unwrap();
+            .expect("Failure communicating with discord api");
     }
 
     async fn add_member(
@@ -510,7 +529,6 @@ impl Handler {
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
-        // member_admin = Handler::can_manage_messages(command);
 
         if let Ok(mut x) = db.clone().lock() {
             let res_list_id = x.get_list_id_by_name(list_name, guild_id);
@@ -560,7 +578,7 @@ impl Handler {
         return JoinResult::BotError;
     }
 
-    async fn handle_join(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_join(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let member_id: UserId = command
             .member
@@ -574,32 +592,34 @@ impl Handler {
         let mut content = format!("Joining the following {} lists:", list_names.len());
 
         for list_name in list_names {
-            let list_name_val = list_name.value.unwrap();
-            let list_name_str = list_name_val.as_str().unwrap();
+            if list_name.kind() != CommandOptionType::String {
+                continue;
+            }
+            let list_name = list_name.value.as_str().unwrap();
             match self
-                .add_member(guild_id, list_name_str, member_id, member_admin, ctx)
+                .add_member(guild_id, list_name, member_id, member_admin, ctx)
                 .await
             {
                 JoinResult::AlreadyMember => {
-                    content += format!("\nYou already joined the list {}", list_name_str).as_str();
+                    content += format!("\nYou already joined the list {}", list_name).as_str();
                 }
                 JoinResult::Succes => {
-                    content += format!("\nAdded to list {}", list_name_str).as_str();
+                    content += format!("\nAdded to list {}", list_name).as_str();
                 }
                 JoinResult::ListDoesNotExist => {
-                    content += format!("\nThe list {} does not exist", list_name_str).as_str();
+                    content += format!("\nThe list {} does not exist", list_name).as_str();
                 }
                 JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to join the list {}.",
-                        list_name_str
+                        list_name
                     )
                     .as_str();
                 }
                 JoinResult::BotError => {
                     content += format!(
                         "\nSomething went wrong trying to join the \"{}\" list.",
-                        list_name_str
+                        list_name
                     )
                     .as_str();
                 }
@@ -608,7 +628,7 @@ impl Handler {
         Handler::send_text(&content, command, ctx, true).await;
     }
 
-    async fn handle_leave(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_leave(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let member_id: UserId = command
             .member
@@ -621,39 +641,41 @@ impl Handler {
 
         let mut content = format!("Leaving the following {} lists:", list_names.len());
         for list_name in list_names {
-            let list_name_val = list_name.value.unwrap();
-            let list_name_str = list_name_val.as_str().unwrap();
+            if list_name.kind() != CommandOptionType::String {
+                continue;
+            }
+            let list_name = list_name.value.as_str().unwrap();
 
             match self
-                .remove_member(guild_id, list_name_str, member_id, as_admin, ctx)
+                .remove_member(guild_id, list_name, member_id, as_admin, ctx)
                 .await
             {
                 JoinResult::Succes => {
-                    content += format!("\nRemoved from list {}", list_name_str).as_str();
+                    content += format!("\nRemoved from list {}", list_name).as_str();
                 }
                 JoinResult::AlreadyMember => {
-                    content += format!("\nYou were not in the list {}", list_name_str).as_str();
+                    content += format!("\nYou were not in the list {}", list_name).as_str();
                 }
                 JoinResult::ListDoesNotExist => {
-                    content += format!("\nThe list {} does not exist", list_name_str).as_str();
+                    content += format!("\nThe list {} does not exist", list_name).as_str();
                 }
                 JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to leave the list {}",
-                        list_name_str
+                        list_name
                     )
                     .as_str();
                 }
                 JoinResult::BotError => {
                     content +=
-                        format!("\nFailed to remove member from list {}", list_name_str).as_str();
+                        format!("\nFailed to remove member from list {}", list_name).as_str();
                 }
             }
         }
         Handler::send_text(&content, command, ctx, true).await;
     }
 
-    async fn handle_create(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_create(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let list_name: &str = &command
             .data
@@ -661,8 +683,6 @@ impl Handler {
             .get(0)
             .expect("No list name given")
             .value
-            .as_ref()
-            .expect("List name argument has no value")
             .as_str()
             .expect("list name is not a valid str.");
 
@@ -693,7 +713,7 @@ impl Handler {
         Handler::send_text(&content, command, ctx, false).await;
     }
 
-    async fn handle_remove(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_remove(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let list_name: &str = &command
             .data
@@ -701,8 +721,6 @@ impl Handler {
             .get(0)
             .expect("No list name given")
             .value
-            .as_ref()
-            .expect("List name argument has no value")
             .as_str()
             .expect("list name is not a valid str.");
 
@@ -722,7 +740,7 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             match x.get_list_id_by_name(list_name, guild_id) {
                 Some(id) => {
-                    x.remove_list(id).expect("list removal failed");
+                    x.remove_list(id).expect("list removal failed"); // Fails HARD on proposals
                     content = "Removed list.".to_string();
                 }
                 None => {
@@ -735,7 +753,7 @@ impl Handler {
         Handler::send_text(&content, command, ctx, false).await;
     }
 
-    async fn handle_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_alias(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let list_name: &str = &command
             .data
@@ -743,8 +761,6 @@ impl Handler {
             .get(0)
             .expect("No list name given")
             .value
-            .as_ref()
-            .expect("List name argument has no value")
             .as_str()
             .expect("list name is not a valid str.");
         let list_alias: &str = &command
@@ -753,8 +769,6 @@ impl Handler {
             .get(1)
             .expect("No list alias given")
             .value
-            .as_ref()
-            .expect("List alias argument has no value")
             .as_str()
             .expect("list alias is not a valid str.");
 
@@ -783,7 +797,7 @@ impl Handler {
         Handler::send_text(&content, command, ctx, false).await;
     }
 
-    async fn handle_remove_alias(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_remove_alias(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.expect("No guild data found");
         let list_name: &str = &command
             .data
@@ -791,8 +805,6 @@ impl Handler {
             .get(0)
             .expect("No list name given")
             .value
-            .as_ref()
-            .expect("List name argument has no value")
             .as_str()
             .expect("list name is not a valid str.");
 
@@ -823,17 +835,20 @@ impl Handler {
         Handler::send_text(&content, command, ctx, false).await;
     }
 
-    async fn autocomplete_alias(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
+    async fn autocomplete_alias(&self, autocomplete: &CommandInteraction, ctx: &Context) {
         let member = autocomplete.member.as_ref().unwrap();
         let member_admin = member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         if !member_admin {
             autocomplete
-                .create_autocomplete_response(&ctx.http, |response| response)
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
                 .await
-                .unwrap();
+                .expect("Failure communicating with discord api");
             return;
         }
         let guild_id = autocomplete.guild_id.expect("No guild data found");
@@ -841,9 +856,9 @@ impl Handler {
 
         let mut filter = "";
         for field in &autocomplete.data.options {
-            if field.focused && field.name == "name" {
-                if let CommandDataOptionValue::String(ref s) = field.resolved.as_ref().unwrap() {
-                    filter = s;
+            if let CommandDataOptionValue::Autocomplete { kind, ref value } = field.value {
+                if field.name == "name" && kind == CommandOptionType::String {
+                    filter = value;
                 }
             }
         }
@@ -857,18 +872,19 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, true)
         }
+
+        let mut resp = CreateAutocompleteResponse::new();
+        for list in aliases {
+            resp = resp.add_string_choice(&list, &list);
+        }
+
         autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
             .await
-            .unwrap();
+            .expect("Failure communicating with discord api");
     }
 
-    async fn handle_get(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_get(&self, command: &CommandInteraction, ctx: &Context) {
         let guild_id: GuildId = command.guild_id.unwrap();
         let member_id: UserId = command
             .member
@@ -885,106 +901,98 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             let list_ids = x.get_lists_with_member(guild_id, member_id).unwrap();
             for list_id in list_ids {
+                //TODO: overflow
                 let list_names = x.get_list_names(list_id);
                 content += format!("\n{}", list_names.join(", ")).as_str();
+                // if content.len() > MESSAGE_CODE_LIMIT - 80 {
+                // }
             }
         }
 
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(content).ephemeral(true))
-            })
-            .await
-            .unwrap();
+        Handler::send_text(&content, command, ctx, true).await;
     }
 
-    async fn handle_add(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+    async fn handle_add(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
-        let target_value = command
+        let Some(CommandDataOptionValue::User(member_id)) = command
             .data
             .options
             .iter()
-            .filter(|x| x.name == "user")
-            .next()
-            .unwrap()
-            .resolved
-            .as_ref()
-            .unwrap();
-        let member_id = match target_value {
-            CommandDataOptionValue::User(ref target, _) => target.id,
-            _ => panic!("Invalid argument type"),
+            .find(|x| x.name == "user")
+            .and_then(|cdo| Some(&cdo.value))
+        else {
+            Handler::send_text("Missing user parameter.", command, ctx, true).await;
+            return;
         };
-        let list_names: Vec<CommandDataOption> = command.data.options.clone();
 
         let mut content = format!(
             "Attempting to add user with id {} to {} lists:",
             member_id,
-            list_names.len() - 1
+            command.data.options.len() - 1
         );
 
-        for list_name in list_names {
+        for list_name in command.data.options.iter() {
             if list_name.name == "user" {
                 continue;
             };
-            let list_name_val = list_name.value.unwrap();
-            let list_name_str = list_name_val.as_str().unwrap();
+            let list_name = list_name.value.as_str().unwrap();
             match self
-                .add_member(guild_id, list_name_str, member_id, true, ctx)
+                .add_member(guild_id, list_name, *member_id, true, ctx)
                 .await
             {
                 JoinResult::AlreadyMember => {
-                    content += format!("\nUser was already in list {}", list_name_str).as_str();
+                    content += format!("\nUser was already in list {}", list_name).as_str();
                 }
                 JoinResult::Succes => {
-                    content += format!("\nAdded to list {}", list_name_str).as_str();
+                    content += format!("\nAdded to list {}", list_name).as_str();
                 }
                 JoinResult::ListDoesNotExist => {
-                    content += format!("\nList {} does not exist", list_name_str).as_str();
+                    content += format!("\nList {} does not exist", list_name).as_str();
                 }
                 JoinResult::MissingPerms => {
                     content += format!(
                         "\nYou do not have permission to add user to list {}.",
-                        list_name_str
+                        list_name
                     )
                     .as_str();
                 }
                 JoinResult::BotError => {
-                    content += format!("\nAn error occured adding user to list {}", list_name_str)
-                        .as_str();
+                    content +=
+                        format!("\nAn error occured adding user to list {}", list_name).as_str();
                 }
             }
         }
         Handler::send_text(&content, command, ctx, false).await;
     }
 
-    async fn handle_kick(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("No guild data found");
+    async fn handle_kick(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
 
-        let target_value = command
+        let member_id = command
             .data
             .options
             .iter()
-            .filter(|x| x.name == "user")
-            .next()
+            .find(|x| x.name == "user")
             .unwrap()
-            .resolved
-            .as_ref()
-            .unwrap();
-        let member_id = match target_value {
-            CommandDataOptionValue::User(ref target, _) => target.id,
-            _ => panic!("Invalid argument type"),
-        };
+            .value
+            .as_user_id()
+            .expect("Not given a valid user");
+
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
 
         let mut content = format!(
@@ -996,8 +1004,7 @@ impl Handler {
             if list_name.name == "user" {
                 continue;
             };
-            let list_name_val = list_name.value.unwrap();
-            let list_name_str = list_name_val.as_str().unwrap();
+            let list_name_str = list_name.value.as_str().unwrap();
 
             match self
                 .remove_member(guild_id, list_name_str, member_id, true, ctx)
@@ -1026,14 +1033,8 @@ impl Handler {
                 }
             }
         }
-        command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(content))
-            })
-            .await
-            .expect("Failed to send leave response.");
+
+        Handler::send_text(&content, command, ctx, false).await;
     }
 
     async fn compose_list(
@@ -1084,33 +1085,28 @@ impl Handler {
         let mut embed = CreateEmbed::default();
 
         if maxlists == 0 {
-            embed.color((255, 0, 0));
-            embed.title("No lists found.");
+            embed = embed.color((255, 0, 0)).title("No lists found.");
             succes = false;
         } else if page < 0 || PAGESIZE * (page as usize) >= maxlists {
-            embed.color((255, 127, 28));
-            embed.title("List page out of range.");
+            embed = embed.color((255, 127, 28)).title("List page out of range.");
             succes = true;
         } else {
-            embed.color((127, 255, 160));
-
-            embed.title(format!(
+            embed = embed.color((127, 255, 160)).title(format!(
                 "Showing lists {}-{} out of {}:",
                 page_selection.0 + 1,
                 page_selection.1,
                 maxlists
             ));
-            for list in visible_lists {
-                embed.field(
-                    list.0,
-                    if list.1.is_empty() {
-                        "-".to_string()
-                    } else {
-                        list.1
-                    },
-                    false,
-                );
-            }
+            embed = embed.description(
+                visible_lists
+                    .iter()
+                    .map(|x| match x.1.as_str() {
+                        "" => format!("- {}", x.0),
+                        _ => format!("- {}\n    {}", x.0, x.1),
+                    })
+                    .collect::<Vec<String>>()
+                    .join("\n"),
+            );
             succes = true;
         }
 
@@ -1122,57 +1118,62 @@ impl Handler {
         for (i, label) in labels.iter().enumerate() {
             select_menu_options.push(CreateSelectMenuOption::new(label, i.to_string()));
         }
-        let mut select_menu = CreateSelectMenu::default();
-        select_menu
-            .custom_id(if filter != "" {
+        let mut select_menu = CreateSelectMenu::new(
+            if filter != "" {
                 filter
             } else {
                 "|".to_string()
-            })
-            .placeholder("Navigate between pages")
-            .options(|options| options.set_options(select_menu_options));
-        let mut action_row = CreateActionRow::default();
-        action_row.add_select_menu(select_menu);
+            },
+            serenity::all::CreateSelectMenuKind::String {
+                options: (select_menu_options),
+            },
+        );
+        select_menu = select_menu.placeholder("Navigate between pages");
+        let action_row = CreateActionRow::SelectMenu(select_menu);
         return (embed, Some(action_row));
     }
 
-    async fn handle_list(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
+    async fn handle_list(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let mut page: i64 = 0;
         let mut filter: String = "".to_string();
         for option in command.data.options.iter() {
             if option.name == "page" {
-                page = option.value.as_ref().unwrap().as_i64().unwrap() - 1;
+                page = option.value.as_i64().unwrap() - 1;
             } else if option.name == "filter" {
-                let value = option.value.as_ref().unwrap();
-                filter = value.as_str().unwrap().to_string();
+                filter = option.value.as_str().unwrap().to_string();
             }
         }
 
         let (embed, action_row) = self.compose_list(guild_id, page, filter, ctx).await;
 
+        let mut response_message = CreateInteractionResponseMessage::new();
+        response_message = response_message.ephemeral(true).add_embed(embed);
+        // Ensure V does not replace anything?
+        if let Some(action_row) = action_row {
+            response_message = response_message.components(vec![action_row]);
+        }
+
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.ephemeral(true).add_embed(embed);
-                        if let Some(action_row) = action_row {
-                            message.components(|c| c.add_action_row(action_row));
-                        }
-                        message
-                    })
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(response_message),
+            )
             .await
             .unwrap();
     }
 
-    async fn list_page_from_component(
-        &self,
-        component: &MessageComponentInteraction,
-        ctx: &Context,
-    ) {
-        let page = component.data.values[0].parse::<i64>().unwrap_or(0);
+    async fn list_page_from_component(&self, component: &ComponentInteraction, ctx: &Context) {
+        let mut page = 0;
+        if let ComponentInteractionDataKind::StringSelect { ref values } = component.data.kind {
+            page = values
+                .get(0)
+                .and_then(|f| f.parse::<i64>().ok())
+                .unwrap_or(0);
+        }
         let guild_id = component.guild_id.unwrap();
         let filter = if component.data.custom_id == "|" {
             "".to_string()
@@ -1184,17 +1185,20 @@ impl Handler {
 
         component.defer(&ctx).await.unwrap();
         component
-            .edit_original_interaction_response(&ctx.http, |response| response.set_embed(embed))
+            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
             .await
             .unwrap();
     }
 
-    async fn handle_configure(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_configure(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(command) {
             Handler::send_not_allowed(&command, &ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.expect("Command called outside guild");
 
         let mut embed = CreateEmbed::default();
 
@@ -1207,7 +1211,7 @@ impl Handler {
                 CommandDataOption { ref name, .. } if name == "show" => {
                     let (a, b, c) = x.get_guild_ping_data(guild_id);
                     let (d, e, f) = x.get_propose_settings(guild_id);
-                    embed
+                    embed = embed
                         .color((0, 0, 0))
                         .description("test")
                         .field(
@@ -1225,18 +1229,20 @@ impl Handler {
                         );
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(value),
+                    ..
                 } if name == "guild" => {
-                    embed
+                    embed = embed
                         .color((255, 0, 0))
                         .description("Configuring guild settings");
-                    for setting in options {
+                    // CommandDataOptionValue::SubCommand(subs)
+                    for setting in value {
                         match setting.name.as_str() {
                             "allow_ping" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_guild_canping(guild_id, *b).unwrap();
-                                    embed.field(
+                                if let CommandDataOptionValue::Boolean(b) = setting.value {
+                                    x.set_guild_canping(guild_id, b).unwrap();
+                                    embed = embed.field(
                                         "Can ping",
                                         format!("public can ping set to {}", b),
                                         false,
@@ -1246,10 +1252,9 @@ impl Handler {
                                 }
                             }
                             "set_guild_ping_cooldown" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref b) = *temp {
-                                    x.set_guild_general_cooldown(guild_id, *b as u64).unwrap();
-                                    embed.field(
+                                if let CommandDataOptionValue::Integer(b) = setting.value {
+                                    x.set_guild_general_cooldown(guild_id, b as u64).unwrap();
+                                    embed = embed.field(
                                         "Guild ping cooldown",
                                         format!("Guild-wide cooldown set to {}", b),
                                         false,
@@ -1259,10 +1264,9 @@ impl Handler {
                                 }
                             }
                             "set_list_ping_cooldown" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref b) = *temp {
-                                    x.set_guild_ping_cooldown(guild_id, *b as u64).unwrap();
-                                    embed.field(
+                                if let CommandDataOptionValue::Integer(b) = setting.value {
+                                    x.set_guild_ping_cooldown(guild_id, b as u64).unwrap();
+                                    embed = embed.field(
                                         "List ping cooldown",
                                         format!("List ping cooldown set to {}", b),
                                         false,
@@ -1276,31 +1280,26 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "role" => {
                     let role_value = options
                         .iter()
-                        .filter(|x| x.name.as_str() == "role")
-                        .next()
-                        .expect("No role argument given")
-                        .resolved
-                        .as_ref()
-                        .unwrap();
-                    let role: RoleId = if let CommandDataOptionValue::Role(ref i) = *role_value {
-                        i.id
-                    } else {
+                        .find(|x| x.name.as_str() == "role")
+                        .expect("No role argument given");
+                    let CommandDataOptionValue::Role(role) = role_value.value else {
                         panic!("List argument is not a valid integer")
                     };
                     for setting in options {
                         match setting.name.as_str() {
                             "propose" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref propose_perm) =
-                                    resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     x.set_role_canpropose(guild_id, role, perm).unwrap();
-                                    embed.field(
+                                    embed = embed.field(
                                         "disable propose",
                                         format!("Proposal permission: {}", perm),
                                         false,
@@ -1310,22 +1309,24 @@ impl Handler {
                                 }
                             }
                             "ping" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     x.set_role_canping(guild_id, role, perm).unwrap();
-                                    embed.field("Ping permission: ", format!("{}", perm), false);
+                                    embed = embed.field(
+                                        "Ping permission: ",
+                                        format!("{}", perm),
+                                        false,
+                                    );
                                 } else {
                                     panic!("The parameter ping for configure role is incorrectly configured");
                                 }
                             }
                             "exclude_from_cooldown" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_role_ignore_cooldown(guild_id, role, *b).unwrap();
-                                    embed.field("role cooldown", format!("{}", b), false);
+                                if let CommandDataOptionValue::Boolean(b) = setting.value {
+                                    x.set_role_ignore_cooldown(guild_id, role, b).unwrap();
+                                    embed = embed.field("role cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
                                 }
@@ -1335,32 +1336,26 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "user" => {
                     let user_value = options
                         .iter()
-                        .filter(|x| x.name.as_str() == "user")
-                        .next()
-                        .expect("No user argument given")
-                        .resolved
-                        .as_ref()
-                        .unwrap();
-                    let user: UserId =
-                        if let CommandDataOptionValue::User(ref target, _) = *user_value {
-                            target.id
-                        } else {
-                            panic!("List argument is not a valid integer")
-                        };
+                        .find(|x| x.name.as_str() == "user")
+                        .expect("No user argument given");
+                    let CommandDataOptionValue::User(user) = user_value.value else {
+                        panic!("List argument is not a valid integer")
+                    };
                     for setting in options {
                         match setting.name.as_str() {
                             "propose" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref propose_perm) =
-                                    *resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
                                     x.set_user_propose(guild_id, user, perm);
-                                    embed.field(
+                                    embed = embed.field(
                                         "disable propose",
                                         format!("Proposal permission: {}", perm),
                                         false,
@@ -1370,22 +1365,24 @@ impl Handler {
                                 }
                             }
                             "ping" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
                                     x.set_user_canping(guild_id, user, perm);
-                                    embed.field("Ping permission: ", format!("{}", perm), false);
+                                    embed = embed.field(
+                                        "Ping permission: ",
+                                        format!("{}", perm),
+                                        false,
+                                    );
                                 } else {
                                     panic!("The parameter ping for configure user is incorrectly configured");
                                 }
                             }
                             "exclude_from_cooldown" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                    x.set_user_cooldown(guild_id, user, *b);
-                                    embed.field("user cooldown", format!("{}", b), false);
+                                if let CommandDataOptionValue::Boolean(b) = setting.value {
+                                    x.set_user_cooldown(guild_id, user, b);
+                                    embed = embed.field("user cooldown", format!("{}", b), false);
                                 } else {
                                     panic!("The parameter exclude_from_cooldown for configure role is incorrectly configured");
                                 }
@@ -1395,31 +1392,26 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "list" => {
                     let list_value = options
                         .iter()
                         .find(|x| x.name.as_str() == "list")
-                        .expect("No list argument given")
-                        .resolved
-                        .as_ref()
-                        .expect("Missing resolved value");
-                    let list_str: &str =
-                        if let CommandDataOptionValue::String(ref list_ref) = *list_value {
-                            list_ref.as_str()
-                        } else {
-                            panic!("List argument is not valid")
-                        };
+                        .expect("No list argument given");
+                    let CommandDataOptionValue::String(ref list_str) = list_value.value else {
+                        panic!("List argument is not valid")
+                    };
                     if let Some(list) = x.get_list_id_by_name(list_str, guild_id) {
                         for setting in options {
                             match setting.name.as_str() {
                                 "description" => {
-                                    let resolved_value = setting.resolved.as_ref().unwrap();
                                     if let CommandDataOptionValue::String(ref description) =
-                                        *resolved_value
+                                        setting.value
                                     {
                                         x.set_description(list, description);
-                                        embed.field(
+                                        embed = embed.field(
                                             "set description",
                                             format!("{}", description),
                                             false,
@@ -1429,46 +1421,53 @@ impl Handler {
                                     }
                                 }
                                 "cooldown" => {
-                                    let resolved_value = setting.resolved.as_ref().unwrap();
                                     if let CommandDataOptionValue::Integer(ref cooldown) =
-                                        *resolved_value
+                                        setting.value
                                     {
                                         x.set_cooldown(list, *cooldown);
-                                        embed.field("set cooldown", format!("{}", cooldown), false);
+                                        embed = embed.field(
+                                            "set cooldown",
+                                            format!("{}", cooldown),
+                                            false,
+                                        );
                                     } else {
                                         panic!("The parameter cooldown for configure list is incorrectly configured");
                                     }
                                 }
                                 "allow_join" => {
-                                    let resolved_value = setting.resolved.as_ref().unwrap();
-
                                     if let CommandDataOptionValue::String(ref joinable) =
-                                        *resolved_value
+                                        setting.value
                                     {
                                         let perm = PERMISSION::from_str(&joinable).unwrap();
                                         x.set_joinable(list, perm);
-                                        embed.field("set joinable", format!("{}", joinable), false);
+                                        embed = embed.field(
+                                            "set joinable",
+                                            format!("{}", joinable),
+                                            false,
+                                        );
                                     } else {
                                         panic!("The parameter allow_join for configure list is incorrectly configured");
                                     }
                                 }
                                 "allow_ping" => {
-                                    let resolved_value = setting.resolved.as_ref().unwrap();
                                     if let CommandDataOptionValue::String(ref pingable) =
-                                        *resolved_value
+                                        setting.value
                                     {
                                         let perm = PERMISSION::from_str(&pingable).unwrap();
                                         x.set_pingable(list, perm);
-                                        embed.field("allow ping", format!("{}", pingable), false);
+                                        embed = embed.field(
+                                            "allow ping",
+                                            format!("{}", pingable),
+                                            false,
+                                        );
                                     } else {
                                         panic!("The parameter allow_ping for configure list is incorrectly configured");
                                     }
                                 }
                                 "show" => {
-                                    let temp = setting.resolved.as_ref().unwrap();
-                                    if let CommandDataOptionValue::Boolean(ref b) = *temp {
-                                        x.set_visible(list, *b);
-                                        embed.field("set visible", format!("{}", b), false);
+                                    if let CommandDataOptionValue::Boolean(b) = setting.value {
+                                        x.set_visible(list, b);
+                                        embed = embed.field("set visible", format!("{}", b), false);
                                     } else {
                                         panic!("The parameter show for configure list is incorrectly configured");
                                     }
@@ -1477,7 +1476,7 @@ impl Handler {
                             }
                         }
                     } else {
-                        embed.field(
+                        embed = embed.field(
                             "List not found",
                             format!("The list with name {} was not found.", list_str),
                             false,
@@ -1485,51 +1484,45 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "channel" => {
                     let channel_value = options
                         .iter()
-                        .filter(|x| x.name.as_str() == "channel")
-                        .next()
-                        .expect("No channel argument given")
-                        .resolved
-                        .as_ref()
-                        .unwrap();
-                    let channel: ChannelId =
-                        if let CommandDataOptionValue::Channel(ref i) = *channel_value {
-                            i.id
-                        } else {
-                            panic!("List argument is not a valid integer")
-                        };
+                        .find(|x| x.name.as_str() == "channel")
+                        .expect("No channel argument given");
+                    let CommandDataOptionValue::Channel(channel) = channel_value.value else {
+                        panic!("List argument is not a valid integer")
+                    };
                     for setting in options {
                         match setting.name.as_str() {
                             "mentioning" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref mention_perm) =
-                                    *resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&mention_perm).unwrap();
-                                    embed.field("set mentioning", format!("{}", perm), false);
+                                    embed =
+                                        embed.field("set mentioning", format!("{}", perm), false);
                                     x.set_channel_mentioning(channel, perm);
                                 }
                             }
                             "proposing" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
                                 if let CommandDataOptionValue::String(ref propose_perm) =
-                                    *resolved_value
+                                    setting.value
                                 {
                                     let perm = PERMISSION::from_str(&propose_perm).unwrap();
-                                    embed.field("set proposing", format!("{}", perm), false);
+                                    embed =
+                                        embed.field("set proposing", format!("{}", perm), false);
                                     x.set_channel_proposing(channel, perm);
                                 }
                             }
                             "visible_commands" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref visible_commands) =
-                                    *resolved_value
+                                if let CommandDataOptionValue::Boolean(visible_commands) =
+                                    setting.value
                                 {
-                                    x.set_channel_public_visible(channel, *visible_commands);
-                                    embed.field(
+                                    x.set_channel_public_visible(channel, visible_commands);
+                                    embed = embed.field(
                                         "set public commands visible",
                                         format!("{}", visible_commands),
                                         false,
@@ -1541,17 +1534,17 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "proposals" => {
                     for setting in options {
                         match setting.name.as_str() {
                             "enabled" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Boolean(ref prop_enabled) =
-                                    *resolved_value
+                                if let CommandDataOptionValue::Boolean(prop_enabled) = setting.value
                                 {
-                                    x.set_guild_canpropose(guild_id, *prop_enabled);
-                                    embed.field(
+                                    x.set_guild_canpropose(guild_id, prop_enabled);
+                                    embed = embed.field(
                                         "enable proposals",
                                         format!("{}", prop_enabled),
                                         false,
@@ -1559,19 +1552,23 @@ impl Handler {
                                 }
                             }
                             "timeout" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref value) = *resolved_value
-                                {
+                                if let CommandDataOptionValue::Integer(ref value) = setting.value {
                                     x.set_propose_timeout(guild_id, *value as u64);
-                                    embed.field("proposal timeout", format!("{}", value), false);
+                                    embed = embed.field(
+                                        "proposal timeout",
+                                        format!("{}", value),
+                                        false,
+                                    );
                                 }
                             }
                             "threshold" => {
-                                let resolved_value = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Integer(ref value) = *resolved_value
-                                {
-                                    x.set_propose_threshold(guild_id, *value as u64);
-                                    embed.field("proposal threshold", format!("{}", value), false);
+                                if let CommandDataOptionValue::Integer(value) = setting.value {
+                                    x.set_propose_threshold(guild_id, value as u64);
+                                    embed = embed.field(
+                                        "proposal threshold",
+                                        format!("{}", value),
+                                        false,
+                                    );
                                 }
                             }
                             _ => (),
@@ -1579,20 +1576,32 @@ impl Handler {
                     }
                 }
                 CommandDataOption {
-                    ref name, options, ..
+                    ref name,
+                    value: CommandDataOptionValue::SubCommand(options),
+                    ..
                 } if name == "log" => {
-                    embed
+                    embed = embed
                         .color((255, 0, 0))
                         .description("Configuring logging settings");
                     for setting in options {
                         match setting.name.as_str() {
                             "set_channel" => {
-                                let temp = setting.resolved.as_ref().unwrap();
-                                if let CommandDataOptionValue::Channel(ref b) = *temp {
-                                    x.set_log_channel(guild_id, Some(b.id)).unwrap();
-                                    embed.field(
+                                if let CommandDataOptionValue::Channel(channel) = setting.value {
+                                    x.set_log_channel(guild_id, Some(channel)).unwrap();
+                                    embed = embed.field(
                                         "log channel",
-                                        format!("log channel set to {}", b.name.as_ref().unwrap()),
+                                        format!(
+                                            "log channel set to channel {}",
+                                            command
+                                                .data
+                                                .resolved
+                                                .channels
+                                                .get(&channel)
+                                                .unwrap()
+                                                .name
+                                                .as_ref()
+                                                .unwrap_or(&"unnamed channel".to_string())
+                                        ),
                                         false,
                                     );
                                 } else {
@@ -1607,17 +1616,27 @@ impl Handler {
             }
         }
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.add_embed(embed))
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().add_embed(embed),
+                ),
+            )
             .await
-            .unwrap();
+            .expect("Failed to send leave response.");
     }
 
-    async fn autocomplete_configure(&self, autocomplete: &AutocompleteInteraction, ctx: &Context) {
-        let guild_id = autocomplete.guild_id.expect("No guild data found");
+    async fn autocomplete_configure(&self, autocomplete: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = autocomplete.guild_id else {
+            autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await
+                .expect("Failure communicating with discord api");
+            return;
+        };
         const SUGGESTIONS: usize = 5;
         let member = autocomplete
             .member
@@ -1626,17 +1645,24 @@ impl Handler {
         let member_admin = member
             .permissions
             .expect("Member reference not from interaction")
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES);
+            .contains(Permissions::MANAGE_MESSAGES);
         let mut filter = "";
-        for field in &autocomplete.data.options {
-            if field.name == "list" {
-                for subfield in &field.options {
-                    if subfield.focused && subfield.name == "list" {
-                        filter = subfield.value.as_ref().unwrap().as_str().unwrap();
-                    }
-                }
+        let field = autocomplete.data.options.iter().find(|p| p.name == "list");
+        if field.is_none() {
+            return;
+        }
+        if let CommandDataOptionValue::SubCommand(ref subs) = field.unwrap().value {
+            let subfield = subs.iter().find(|p| p.name == "list");
+            if subfield.is_none() {
+                return;
+            }
+            if let CommandDataOptionValue::Autocomplete { kind: _, ref value } =
+                subfield.unwrap().value
+            {
+                filter = value;
             }
         }
+
         let mut aliases: Vec<String> = Vec::new();
 
         let mut data = ctx.data.write().await;
@@ -1647,28 +1673,41 @@ impl Handler {
         if let Ok(mut x) = db.clone().lock() {
             aliases = x.get_list_aliases_by_search(guild_id, 0, SUGGESTIONS, filter, member_admin)
         }
+
+        let mut resp = CreateAutocompleteResponse::new();
+        for list in aliases {
+            resp = resp.add_string_choice(&list, &list);
+        }
+
         autocomplete
-            .create_autocomplete_response(&ctx.http, |response| {
-                for list in aliases {
-                    response.add_string_choice(&list, &list);
-                }
-                response
-            })
+            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
             .await
-            .unwrap();
+            .expect("Failure communicating with discord api");
     }
 
-    async fn handle_invalid(&self, _command: &ApplicationCommandInteraction) {}
+    async fn handle_invalid(&self, _command: &CommandInteraction) {}
 
-    async fn handle_propose(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id: GuildId = command
-            .guild_id
-            .expect("/propose called from outside guild");
-        let channel_id = command.channel_id;
-        let name = match command.data.options[0].resolved.as_ref().unwrap() {
-            CommandDataOptionValue::String(a) => a,
-            _ => panic!("invalid argument for propose"),
+    async fn handle_propose(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
         };
+        let channel_id = command.channel_id;
+        let name = command.data.options.iter().find(|p| p.name == "name");
+        let Some(CommandDataOption {
+            value: CommandDataOptionValue::String(name),
+            ..
+        }) = name
+        else {
+            Handler::send_text("No list name was given.", command, ctx, true).await;
+            return;
+        };
+        let name = name.replace('#', "\\#").replace('\n', "");
+        // Exclude _, *, #
+        if name.len() > 80 {
+            Handler::send_text("List name is too long.", command, ctx, true).await;
+            return;
+        }
 
         let mut proposal_id: Option<u64> = None;
         let as_admin = Handler::can_manage_messages(command);
@@ -1706,9 +1745,9 @@ impl Handler {
 
             if override_canpropose != PERMISSION::DENY {
                 let timestamp = serenity::model::Timestamp::now().unix_timestamp();
-                proposal_id = x.start_proposal(guild_id, name, timestamp, channel_id);
-                if proposal_id != None {
-                    x.vote_proposal(proposal_id.unwrap(), member.user.id);
+                proposal_id = x.start_proposal(guild_id, &name, timestamp, channel_id);
+                if let Some(pid) = proposal_id {
+                    x.vote_proposal(pid, member.user.id);
                 }
             }
         } else {
@@ -1717,98 +1756,90 @@ impl Handler {
 
         let mut embed = CreateEmbed::default();
 
-        if proposal_id != None && override_canpropose != PERMISSION::DENY {
-            embed
+        if override_canpropose == PERMISSION::DENY {
+            embed = embed
+                .title("You do not have permission to use /propose here.")
+                .color((255, 0, 0));
+        } else if let Some(pid) = proposal_id {
+            embed = embed
                 .title(format!("A new list has been proposed: {}", name))
-                .author(|author| {
-                    author
-                        .icon_url(command.user.avatar_url().unwrap())
-                        .name(command.user.name.clone())
-                })
+                .author(
+                    CreateEmbedAuthor::new(command.user.name.clone())
+                        .icon_url(command.user.avatar_url().unwrap()),
+                )
                 .color((31, 127, 255));
 
-            let mut button = CreateButton::default();
-            button
-                .custom_id(proposal_id.unwrap().to_string())
+            let button = CreateButton::new(pid.to_string())
                 .label("Vote")
                 .style(ButtonStyle::Secondary);
-            let mut action_row = CreateActionRow::default();
-            action_row.add_button(button);
-            command
-                .create_interaction_response(&ctx.http, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| {
-                            message.add_embed(embed);
-                            message.components(|c| c.add_action_row(action_row));
-                            message
-                        })
-                })
-                .await
-                .unwrap();
-            let smes = command.get_interaction_response(&ctx.http).await.unwrap();
-            let message_id = smes.id;
-            if let Ok(mut x) = db.clone().lock() {
-                x.complete_proposal(proposal_id.unwrap(), message_id); //FIXME: dunno what's wrong
-            }
+            let action_row = CreateActionRow::Buttons(vec![button]);
+            let prop_response = command
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .add_embed(embed)
+                            .components(vec![action_row]),
+                    ),
+                )
+                .await;
+            if prop_response.is_ok() {
+                let smes = command.get_response(&ctx.http).await.unwrap();
+                let message_id = smes.id;
+                if let Ok(mut x) = db.clone().lock() {
+                    x.complete_proposal(pid, message_id);
+                }
+            } // Log here
+            return;
         } else {
-            if override_canpropose == PERMISSION::DENY {
-                embed
-                    .title("You do not have permission to use /propose here.")
-                    .color((255, 0, 0));
-            } else {
-                embed.title("This list already exists").color((0, 255, 0));
-            }
-            command
-                .create_interaction_response(&ctx.http, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| {
-                            message.add_embed(embed).ephemeral(true)
-                        })
-                })
-                .await
-                .unwrap();
+            embed = embed.title("This list already exists").color((0, 255, 0));
         }
+        command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .add_embed(embed)
+                        .ephemeral(true),
+                ),
+            )
+            .await
+            .ok();
     }
 
-    async fn handle_cancel_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_cancel_proposal(&self, command: &CommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
-            command
-                .create_interaction_response(&ctx.http, |res| {
-                    res.kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|mes| {
-                            mes.ephemeral(true)
-                                .content("You do not have permission to use this command")
-                        })
-                })
-                .await
-                .unwrap();
+            Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
+        let mut proposal_data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
-            if message.is_own(&ctx.cache) {
-                match &message.components[..] {
-                    [ActionRow { components: cs, .. }] => {
-                        if let ActionRowComponent::Button(b) = &cs[0] {
-                            if b.label.as_ref().unwrap() == "Vote" {
-                                data = Some((
-                                    b.custom_id.as_ref().unwrap().parse::<u64>().unwrap(),
-                                    message.id,
-                                    message.channel_id,
-                                ));
-                                break;
-                            }
-                        }
+            if message.author.id != ctx.cache.current_user().id {
+                continue;
+            }
+            if let [ActionRow {
+                components: comps, ..
+            }] = &message.components[..]
+            {
+                if let ActionRowComponent::Button(Button {
+                    kind: _,
+                    data: ButtonKind::NonLink { custom_id, .. },
+                    label: Some(label),
+                    ..
+                }) = &comps[0]
+                {
+                    if label != "Vote" {
+                        break;
+                    } else if let Ok(cid) = custom_id.parse::<u64>() {
+                        proposal_data = Some((cid, message.id, message.channel_id));
+                        break;
                     }
-                    _ => (),
                 }
             }
         }
 
-        if let Some((list_id, message_id, channel_id)) = data {
+        if let Some((list_id, message_id, channel_id)) = proposal_data {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data
                 .get_mut::<DB>()
@@ -1817,74 +1848,73 @@ impl Handler {
             let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
                 if x.remove_proposal(list_id).unwrap() {
-                    x.remove_list(list_id).unwrap();
-                    embed.title("Voting cancelled");
+                    if x.remove_list(list_id).is_ok() {
+                        embed = embed.title("Voting cancelled");
+                    } else {
+                        embed = embed.title("Proposal cancelled, something went wrong???");
+                        // Log this
+                    }
                 } else {
                     if x.get_list_exists(list_id) {
-                        embed.title("Proposal already accepted");
+                        embed = embed.title("Proposal already accepted");
                     } else {
-                        embed.title("Proposal already removed");
+                        embed = embed.title("Proposal already removed");
                     }
                 }
             }
 
             channel_id
-                .edit_message(&ctx.http, message_id, |prev| {
-                    prev.components(|c| c).set_embed(embed)
-                })
+                .edit_message(
+                    &ctx.http,
+                    message_id,
+                    EditMessage::new().embed(embed).components(vec![]),
+                )
                 .await
                 .unwrap();
         }
-        command
-            .create_interaction_response(&ctx.http, |res| {
-                res.kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|mes| {
-                        mes.ephemeral(true)
-                            .content("Check the original proposal message for results.")
-                    })
-            })
-            .await
-            .unwrap();
+        Handler::send_text(
+            "Check the original proposal message for results.",
+            command,
+            ctx,
+            true,
+        )
+        .await;
     }
 
-    async fn handle_accept_proposal(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_accept_proposal(&self, command: &CommandInteraction, ctx: &Context) {
         if !Handler::can_manage_messages(command) {
-            command
-                .create_interaction_response(&ctx.http, |res| {
-                    res.kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|mes| {
-                            mes.ephemeral(true)
-                                .content("You do not have permission to use this command")
-                        })
-                })
-                .await
-                .unwrap();
+            Handler::send_not_allowed(command, ctx).await;
             return;
         }
 
-        let mut data: Option<(ListId, MessageId, ChannelId)> = None;
+        let mut proposal_data: Option<(ListId, MessageId, ChannelId)> = None;
 
         for (_, message) in &command.data.resolved.messages {
-            if message.is_own(&ctx.cache) {
-                match &message.components[..] {
-                    [ActionRow { components: cs, .. }] => {
-                        if let ActionRowComponent::Button(b) = &cs[0] {
-                            if b.label.as_ref().unwrap() == "Vote" {
-                                data = Some((
-                                    b.custom_id.as_ref().unwrap().parse::<u64>().unwrap(),
-                                    message.id,
-                                    message.channel_id,
-                                ));
-                                break;
-                            }
-                        }
+            if message.author.id != ctx.cache.current_user().id {
+                continue;
+            }
+            if let [ActionRow {
+                components: comps, ..
+            }] = &message.components[..]
+            {
+                if let ActionRowComponent::Button(Button {
+                    kind: _,
+                    data: ButtonKind::NonLink { custom_id, .. },
+                    label: Some(label),
+                    ..
+                }) = &comps[0]
+                {
+                    if label != "Vote" {
+                        break;
+                    } else if let Ok(cid) = custom_id.parse::<u64>() {
+                        proposal_data = Some((cid, message.id, message.channel_id));
+                        break;
                     }
-                    _ => (),
                 }
             }
         }
 
-        if let Some((list_id, message_id, channel_id)) = data {
+        if let Some((list_id, message_id, channel_id)) = proposal_data {
             let mut data = ctx.data.write().await;
             let BotData { database: db, .. } = data
                 .get_mut::<DB>()
@@ -1893,33 +1923,31 @@ impl Handler {
             let mut embed = CreateEmbed::default();
             if let Ok(mut x) = db.clone().lock() {
                 if x.accept_proposal(list_id) {
-                    embed.title("Proposal acccepted");
+                    embed = embed.title("Proposal acccepted");
                 } else {
                     if x.get_list_exists(list_id) {
-                        embed.title("Proposal already accepted");
+                        embed = embed.title("Proposal already accepted");
                     } else {
-                        embed.title("Proposal already removed");
+                        embed = embed.title("Proposal already removed");
                     }
                 }
             }
-
             channel_id
-                .edit_message(&ctx.http, message_id, |prev| {
-                    prev.components(|c| c).set_embed(embed)
-                })
+                .edit_message(
+                    &ctx.http,
+                    message_id,
+                    EditMessage::new().embed(embed).components(vec![]),
+                )
                 .await
                 .unwrap();
         }
-        command
-            .create_interaction_response(&ctx.http, |res| {
-                res.kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|mes| {
-                        mes.ephemeral(true)
-                            .content("Check the original proposal message for results.")
-                    })
-            })
-            .await
-            .unwrap();
+        Handler::send_text(
+            "Check the original proposal message for results.",
+            command,
+            ctx,
+            true,
+        )
+        .await;
     }
 
     /// Gets called without guild context automatically
@@ -1933,27 +1961,33 @@ impl Handler {
         let mut replies: Vec<(ChannelId, MessageId, bool)> = vec![];
         if let Ok(mut x) = db.clone().lock() {
             for (guild_id, proposal) in x.get_bot_proposals() {
-                if let ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id) =
+                let ProposalStatus::ACTIVE(list_id, votes, timestamp, channel_id, message_id) =
                     proposal
-                {
-                    let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
-                    if votes >= vote_threshold {
-                        x.accept_proposal(list_id);
-                        if channel_id != 0 && message_id != 0 {
-                            replies.push((channel_id, message_id, true));
-                        }
-                    } else if timestamp + vote_timeout <= now {
-                        x.remove_proposal(list_id).unwrap();
-                        x.remove_list(list_id).unwrap();
-                        if channel_id != 0 && message_id != 0 {
-                            replies.push((channel_id, message_id, false));
-                        }
+                else {
+                    continue;
+                };
+                let (_, vote_timeout, vote_threshold) = x.get_propose_settings(guild_id);
+                if votes >= vote_threshold {
+                    x.accept_proposal(list_id);
+                    if channel_id != 0 && message_id != 0 {
+                        replies.push((channel_id, message_id, true));
                     }
+                } else if timestamp + vote_timeout <= now {
+                    x.remove_proposal(list_id).unwrap();
+                    x.remove_list(list_id).unwrap();
+                    if channel_id != 0 && message_id != 0 {
+                        replies.push((channel_id, message_id, false));
+                    }
+                }
+                // We'd rather wait a little longer than reach a rate limit.
+                if replies.len() >= 10 {
+                    break;
                 }
             }
         }
 
-        //TODO: this is lot of potential awaits, actually using async might be nice?
+        let mut awaits = vec![];
+        let mut more_awaits = vec![];
         for (channel_id, message_id, accepted) in replies {
             let reference =
                 serenity::model::prelude::MessageReference::from((channel_id, message_id));
@@ -1962,22 +1996,31 @@ impl Handler {
             } else {
                 "Proposal timed out"
             };
-            Handler::send_channel(new_message, channel_id, ctx, false, Some(reference)).await;
+            awaits.push(Handler::send_channel(
+                new_message,
+                channel_id,
+                ctx,
+                false,
+                Some(reference),
+            ));
             let mut embed = CreateEmbed::default();
 
-            embed.description(new_message);
-            channel_id
-                .edit_message(&ctx.http, message_id, |data| {
-                    data.set_embed(embed)
-                        .set_components(serenity::builder::CreateComponents::default())
-                })
-                .await
-                .unwrap();
+            embed = embed.description(new_message);
+            more_awaits.push(channel_id.edit_message(
+                &ctx.http,
+                message_id,
+                EditMessage::new().embed(embed),
+            ));
         }
+        join_all(awaits).await;
+        join_all(more_awaits).await;
     }
 
-    async fn handle_list_proposals(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let guild_id = command.guild_id.unwrap();
+    async fn handle_list_proposals(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -1990,7 +2033,7 @@ impl Handler {
             let (_, timeout, threshold) = x.get_propose_settings(guild_id);
             let proposals = x.get_proposals(guild_id);
             if proposals.len() == 0 {
-                embed.title("No proposals found");
+                embed = embed.title("No proposals found");
             }
             for (name, proposal) in proposals {
                 if let ProposalStatus::ACTIVE(_, votes, timestamp, channel_id, message_id) =
@@ -2000,7 +2043,7 @@ impl Handler {
                     let (hours, minutes) = (minutes / 60, minutes % 60);
 
                     if message_id == 0 {
-                        embed.field(
+                        embed = embed.field(
                             name,
                             format!(
                                 "Has {} / {} votes, {} hours and {} minutes remaining.",
@@ -2009,7 +2052,7 @@ impl Handler {
                             true,
                         );
                     } else {
-                        embed.field(
+                        embed = embed.field(
                             name,
                             format!(
                                 "Has {} / {} votes, {} hours and {} minutes remaining.\n{}",
@@ -2027,13 +2070,17 @@ impl Handler {
         }
 
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.add_embed(embed).ephemeral(true))
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .add_embed(embed)
+                        .ephemeral(true),
+                ),
+            )
             .await
-            .unwrap();
+            .ok();
+        // What to do if not ok?
     }
 
     async fn check_proposal(&self, list_id: ListId, ctx: &Context) -> ProposalStatus {
@@ -2043,28 +2090,23 @@ impl Handler {
             .expect("Could not find database in bot data");
 
         if let Ok(mut x) = db.clone().lock() {
-            match x.get_proposal_data(list_id) {
-                ProposalStatus::ACTIVE(_, votes, timestamp, t1, t2) => {
-                    let guild_id = x.get_list_guild(list_id).unwrap();
-                    let (_, _, vote_threshold) = x.get_propose_settings(guild_id);
-                    if votes >= vote_threshold {
-                        x.accept_proposal(list_id);
-                        return ProposalStatus::ACCEPTED(list_id);
-                    }
-                    // Do not remove proposals when voting for social reasons?
-                    return ProposalStatus::ACTIVE(list_id, votes, timestamp, t1, t2);
-                }
-                a => return a,
+            let ProposalStatus::ACTIVE(_, votes, timestamp, t1, t2) = x.get_proposal_data(list_id)
+            else {
+                return ProposalStatus::REMOVED;
             };
+            let guild_id = x.get_list_guild(list_id).unwrap();
+            let (_, _, vote_threshold) = x.get_propose_settings(guild_id);
+            if votes >= vote_threshold {
+                x.accept_proposal(list_id);
+                return ProposalStatus::ACCEPTED(list_id);
+            }
+            // Do not remove proposals when voting for social reasons?
+            return ProposalStatus::ACTIVE(list_id, votes, timestamp, t1, t2);
         }
-        panic!("could not get db access");
+        ProposalStatus::REMOVED
     }
 
-    async fn propose_vote_from_component(
-        &self,
-        component: &MessageComponentInteraction,
-        ctx: &Context,
-    ) {
+    async fn propose_vote_from_component(&self, component: &ComponentInteraction, ctx: &Context) {
         let list_id = component.data.custom_id.parse::<u64>().unwrap();
         {
             let mut data = ctx.data.write().await;
@@ -2078,75 +2120,75 @@ impl Handler {
             }
         }
 
-        let old_embed = &component.message.embeds[0];
-
         let mut embed = CreateEmbed::default();
         match self.check_proposal(list_id, ctx).await {
             ProposalStatus::ACCEPTED(..) => {
-                embed.description("Proposal accepted");
+                embed = embed.description("Proposal accepted");
             }
             ProposalStatus::DENIED => {
                 // Doesn't happen
-                embed.description("Proposal expired");
+                embed = embed.description("Proposal expired");
             }
             ProposalStatus::REMOVED => {
                 // Won't happen because a list getting cancelled because you voted ain't fun
-                embed.description("Proposal not found");
+                embed = embed.description("Proposal not found");
             }
             ProposalStatus::ACTIVE(_, votes, ..) => {
-                embed.author(|ab| {
-                    ab.icon_url(
+                if component.message.embeds.len() > 0 {
+                    // Embed not removed
+                    let old_embed = &component.message.embeds[0];
+                    if let Some(EmbedAuthor {
+                        name,
+                        icon_url: Some(furl),
+                        ..
+                    }) = old_embed.author.as_ref()
+                    {
+                        let author = CreateEmbedAuthor::new(name).icon_url(furl);
+                        embed = embed.author(author);
+                    }
+                    embed = embed.title(
                         old_embed
-                            .author
+                            .title
                             .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .icon_url
-                            .as_ref()
-                            .expect("Old proposal embed malformed"),
-                    )
-                    .name(
-                        &old_embed
-                            .author
-                            .as_ref()
-                            .expect("Old proposal embed malformed")
-                            .name,
-                    )
-                });
-                embed.title(
-                    old_embed
-                        .title
-                        .as_ref()
-                        .expect("Old proposal embed malformed"),
-                );
-                embed.description(format!("Votes: {}", votes));
+                            .unwrap_or(&"Missing proposal title".to_string()),
+                    );
+                } else {
+                    embed = embed.title("Someone removed this embed, shame on them!");
+                }
+                embed = embed.description(format!("Votes: {}", votes));
 
                 component
-                    .create_interaction_response(&ctx.http, |res| {
-                        res.kind(InteractionResponseType::UpdateMessage)
-                            .interaction_response_data(|data| data.set_embed(embed))
-                    })
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new().embed(embed),
+                        ),
+                    )
                     .await
-                    .unwrap();
+                    .ok();
+                // Again, log errors here
                 return;
             }
         }
         component
-            .create_interaction_response(&ctx.http, |res| {
-                res.kind(InteractionResponseType::UpdateMessage)
-                    .interaction_response_data(|data| {
-                        data.set_embed(embed)
-                            .set_components(serenity::builder::CreateComponents::default())
-                    })
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .embed(embed)
+                        .components(vec![]),
+                ),
+            )
             .await
-            .unwrap();
+            .ok();
+        // Again, log errors here
     }
 
     async fn check_triggers(
         &self,
         ctx: &Context,
         guild_id: GuildId,
-        member: &Member,
+        roles: &Vec<RoleId>,
         triggers: Vec<LOGTRIGGER>,
     ) -> Vec<(ChannelId, String)> {
         let mut responses: Vec<(ChannelId, String)> = vec![];
@@ -2160,7 +2202,7 @@ impl Handler {
                     for condition in x.get_response_conditions(id) {
                         if !match condition {
                             (LOGCONDITION::HasRole(role_id), invert, _) => {
-                                member.roles.contains(&role_id) ^ invert
+                                roles.contains(&role_id) ^ invert
                             }
                         } {
                             continue 'outer;
@@ -2174,72 +2216,66 @@ impl Handler {
         responses
     }
 
-    async fn _handle_context_ping(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
-        let mut main_question = CreateActionRow::default();
-        main_question.create_input_text(|text| {
-            text.custom_id("top")
-                .style(InputTextStyle::Paragraph)
-                .label("Name something you like within Inverted Fate?")
-                .value("Doesn't have to be your favorite thing, but try to be somewhat specific")
-        });
-        let mut cominter = CreateActionRow::default();
-        cominter.create_input_text(|text| {
-            text.custom_id("main")
-                .style(InputTextStyle::Paragraph)
-                .label("What do you expect from the community?")
-                .value("Mostly anything is fine, don't worry!")
-        });
-        let mut friends = CreateActionRow::default();
-        friends.create_input_text(|text| {
-            text.custom_id("side")
-                .style(InputTextStyle::Short)
-                .label("If a friend referred you, please mention them")
-        });
-        let mut cc = CreateActionRow::default();
-        cc.create_input_text(|text| {
-            text.custom_id("bottom")
-                .style(InputTextStyle::Paragraph)
-                .label("Are you a content creator?")
-                .value("Feel free to share links where applicable.")
-        });
+    async fn _handle_context_ping(&self, command: &CommandInteraction, ctx: &Context) {
+        let main_question = CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph,
+                "Name something you like within Inverted Fate?",
+                "top",
+            )
+            .value("Doesn't have to be your favorite thing, but try to be somewhat specific"),
+        );
+        let cominter = CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph,
+                "What do you expect from the community?",
+                "main",
+            )
+            .placeholder("Mostly anything is fine, don't worry!"),
+        );
+        let friends = CreateActionRow::InputText(CreateInputText::new(
+            InputTextStyle::Short,
+            "If a friend referred you, please mention them",
+            "side",
+        ));
 
-        let mut other_fandoms = CreateActionRow::default();
-        other_fandoms.create_input_text(|text| {
-            text.custom_id("bottomer")
-                .style(InputTextStyle::Paragraph)
-                .label("What other interests do you have?")
-                .value("Fandoms, games, hobbies etc. outside of undertale.")
-        });
+        let cc = CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph,
+                "Are you a content creator?",
+                "bottom",
+            )
+            .placeholder("Feel free to share links where applicable."),
+        );
+
+        let other_fandoms = CreateActionRow::InputText(
+            CreateInputText::new(
+                InputTextStyle::Paragraph,
+                "What other interests do you have?",
+                "bottomer",
+            )
+            .value("Fandoms, games, hobbies etc. outside of undertale."),
+        );
 
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::Modal)
-                    .interaction_response_data(|modal| {
-                        modal
-                            .title("Welcome to the Inverted Fate community.")
-                            .custom_id("AAA")
-                            .content("\
-                                We would like you to answer a few questions to make sure you are here in good faith.\
-                                There are no correct or incorrect answers to these questions.\
-                                Once we have had a chance to consider your answers, you will be let into the greater community.\
-                            ")
-
-                            .components(|component| {
-                                component
-                                    .add_action_row(main_question)
-                                    .add_action_row(cominter)
-                                    .add_action_row(friends)
-                                    .add_action_row(cc)
-                                    .add_action_row(other_fandoms)
-                            })
-                    })
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Modal(
+                    CreateModal::new("AAA", "Welcome to the Inverted Fate community.")
+                        .components(vec![main_question, cominter, friends, cc, other_fandoms]),
+                ),
+            )
             .await
             .unwrap();
     }
 
-    async fn handle_log_purge(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_log_purge(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
+        // Now that guild presence is confirmed we may unwrap some things...
+
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
@@ -2250,7 +2286,6 @@ impl Handler {
             return;
         }
 
-        let guild_id = command.guild_id.unwrap();
         let mut data = ctx.data.write().await;
         let BotData { database: db, .. } = data
             .get_mut::<DB>()
@@ -2267,21 +2302,27 @@ impl Handler {
             return;
         }
 
-        let mut ref_user: Option<&User> = None;
+        let mut ref_user: Option<User> = None;
         for field in &command.data.options {
-            if field.kind == CommandOptionType::User {
-                let resolved_value = field.resolved.as_ref().unwrap();
-                if let CommandDataOptionValue::User(ref target, _) = resolved_value {
-                    ref_user = Some(target);
-                };
+            if let CommandDataOptionValue::User(uid) = field.value {
+                ref_user = Some(uid.to_user(&ctx.http).await.unwrap());
             }
         }
 
-        let mut messages = command
+        let Ok(mut messages) = command
             .channel_id
-            .messages(&ctx.http, |x| x.limit(25))
+            .messages(&ctx.http, GetMessages::new().limit(25))
             .await
-            .unwrap();
+        else {
+            Handler::send_text(
+                "Failed to retrieve recent messages, try again later.",
+                command,
+                ctx,
+                true,
+            )
+            .await;
+            return;
+        };
         messages.reverse();
 
         let mut select_menu_options: Vec<CreateSelectMenuOption> = Vec::new();
@@ -2295,54 +2336,52 @@ impl Handler {
             }
             let label = match message.content.len() {
                 0 => "Empty",
-                1..=90 => message.content.as_str(),
-                _ => &message.content[0..50],
+                1..=100 => message.content.as_str(),
+                _ => &message.content[0..80],
             };
-            select_menu_options.push(CreateSelectMenuOption::new(label, message.id));
+            select_menu_options.push(CreateSelectMenuOption::new(label, message.id.to_string()));
         }
 
         if select_menu_options.len() == 0 {
             Handler::send_text("No recent messages to log or purge", command, ctx, true).await;
             return;
         }
-        let mut select_menu = CreateSelectMenu::default();
-        select_menu
-            .placeholder("Select multiple messages")
-            .max_values(min(18, select_menu_options.len() as u64))
-            .options(|options| options.set_options(select_menu_options));
+        let l = select_menu_options.len() as u8;
+        let mut select_menu = CreateSelectMenu::new(
+            "-",
+            serenity::all::CreateSelectMenuKind::String {
+                options: select_menu_options,
+            },
+        )
+        .placeholder("Select multiple messages")
+        .max_values(min(18, l));
 
         if let Some(user) = ref_user {
-            select_menu.custom_id(format!(
-                "{}#{} - {}",
-                user.name, user.discriminator, user.id
-            ));
-        } else {
-            select_menu.custom_id("-");
+            select_menu = select_menu.custom_id(format!("{} - {}", user.name, user.id));
         }
 
-        let mut action_row = CreateActionRow::default();
-        action_row.add_select_menu(select_menu);
+        let action_row = CreateActionRow::SelectMenu(select_menu);
 
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message
-                            .ephemeral(true)
-                            .components(|c| c.add_action_row(action_row))
-                    })
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .ephemeral(true)
+                        .components(vec![action_row]),
+                ),
+            )
             .await
-            .unwrap();
+            .ok();
+        // Again, log errors here
     }
 
-    async fn process_log_purge(&self, component: &MessageComponentInteraction, ctx: &Context) {
+    async fn process_log_purge(&self, component: &ComponentInteraction, ctx: &Context) {
         let member = component.member.as_ref().unwrap();
         if !member
             .permissions
             .unwrap()
-            .contains(serenity::model::permissions::Permissions::MANAGE_MESSAGES)
+            .contains(Permissions::MANAGE_MESSAGES)
         {
             component.defer(&ctx.http).await.unwrap();
             return;
@@ -2355,31 +2394,32 @@ impl Handler {
             .expect("Could not find database in bot data");
         let res_cid: ChannelId;
         if let Ok(x) = db.clone().lock() {
-            let so = x.get_log_channel(guild_id).unwrap();
-            res_cid = match so {
+            res_cid = match x.get_log_channel(guild_id).unwrap() {
                 Some(cid) => cid,
                 None => return,
             }
         } else {
             panic!("Database access error");
         }
+        let ComponentInteractionDataKind::StringSelect { values: ref v } = component.data.kind
+        else {
+            return;
+        };
 
-        let ids = &component
-            .data
-            .values
+        let ids = v
             .iter()
             .map(|a| MessageId::from(a.parse::<u64>().unwrap()))
             .collect::<Vec<MessageId>>();
 
         let mut messages = component
             .channel_id
-            .messages(&ctx.http, |x| x.limit(30))
+            .messages(&ctx.http, GetMessages::new().limit(32))
             .await
             .unwrap();
         messages.reverse();
 
-        let mut embed = CreateEmbed::default();
-        embed.title(format!("Delete log: {}", component.data.custom_id));
+        let mut embed =
+            CreateEmbed::new().title(format!("Delete log: {}", component.data.custom_id));
         for message in messages.into_iter().filter(|a| ids.contains(&a.id)) {
             const SUBMESSAGE_LENGTH: usize = 970;
             let mut citer = message.content.chars();
@@ -2390,7 +2430,7 @@ impl Handler {
                     break;
                 }
 
-                embed.field(
+                embed = embed.field(
                     if i == 0 {
                         &message.author.name
                     } else {
@@ -2413,22 +2453,21 @@ impl Handler {
             .await
             .unwrap(); //TODO: Might want to reverify no old messages are included
         res_cid
-            .send_message(&ctx.http, |response| response.set_embed(embed))
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
             .await
             .unwrap();
         component.defer(&ctx.http).await.unwrap();
     }
 
-    async fn handle_list_auto_response(
-        &self,
-        command: &ApplicationCommandInteraction,
-        ctx: &Context,
-    ) {
+    async fn handle_list_auto_response(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
         let mut embed = CreateEmbed::default();
 
         let data = ctx.data.write().await;
@@ -2436,8 +2475,8 @@ impl Handler {
         if let Ok(x) = db.clone().lock() {
             let responses = x.get_all_responses(guild_id).unwrap();
             for (channel_id, response_message, trigger) in responses {
-                embed.field(
-                    trigger,
+                embed = embed.field(
+                    trigger.to_string(),
                     format!(
                         "Message to channel with id {} as follows:\n{}",
                         channel_id, response_message
@@ -2449,54 +2488,67 @@ impl Handler {
             panic!("Could not get database access.");
         }
         command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.set_embed(embed))
-            })
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().embed(embed),
+                ),
+            )
             .await
-            .unwrap();
+            .ok();
     }
 
-    async fn handle_auto_response(&self, command: &ApplicationCommandInteraction, ctx: &Context) {
+    async fn handle_auto_response(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
 
         let message: &str;
 
         let subcom = &command.data.options[0];
         let CommandDataOption {
-            ref name, options, ..
+            ref name, value, ..
         } = subcom;
+
+        let CommandDataOptionValue::SubCommand(options) = value else {
+            Handler::send_text("Invalid usage of command", command, ctx, true).await;
+            return;
+        };
 
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let mut role_id = RoleId(0);
-            let mut channel_id = ChannelId(0);
+            let mut role_id = None;
+            let mut channel_id = None;
             let mut response_message = "";
             for setting in options {
-                match &setting.resolved.as_ref().unwrap() {
-                    CommandDataOptionValue::Role(role) => role_id = role.id,
-                    CommandDataOptionValue::Channel(p_channel) => channel_id = p_channel.id,
-                    CommandDataOptionValue::String(string) => response_message = string,
+                match setting.value {
+                    CommandDataOptionValue::Role(role) => role_id = Some(role),
+                    CommandDataOptionValue::Channel(p_channel) => channel_id = Some(p_channel),
+                    CommandDataOptionValue::String(ref string) => response_message = string,
                     _ => (),
                 }
             }
             let trigger = match name.as_str() {
-                "role_add" => LOGTRIGGER::RoleAdd(role_id),
-                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "role_add" => LOGTRIGGER::RoleAdd(role_id.unwrap()),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id.unwrap()),
                 "join_server" => LOGTRIGGER::JoinServer(),
                 _ => panic!("invalid subcommand name"),
             };
             match command.data.name.as_str() {
                 "add_auto_response" => {
-                    x.add_response(guild_id, trigger, channel_id, response_message)
-                        .unwrap();
-                    message = "Added automatic response.";
+                    if x.has_response(guild_id, trigger).is_some() {
+                        message = "Automatic response with that trigger already present.";
+                    } else {
+                        x.add_response(guild_id, trigger, channel_id.unwrap(), response_message)
+                            .unwrap();
+                        message = "Added automatic response.";
+                    }
                 }
                 "remove_auto_response" => {
                     if x.remove_response(guild_id, trigger).unwrap() {
@@ -2515,49 +2567,53 @@ impl Handler {
         Handler::send_text(message, command, ctx, false).await;
     }
 
-    async fn handle_auto_response_condition(
-        &self,
-        command: &ApplicationCommandInteraction,
-        ctx: &Context,
-    ) {
+    async fn handle_auto_response_condition(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
         if !Handler::can_manage_messages(&command) {
             Handler::send_not_allowed(command, ctx).await;
             return;
         }
-        let guild_id: GuildId = command.guild_id.unwrap();
 
         let message: &str;
 
         let subcom = &command.data.options[0];
         let CommandDataOption {
-            ref name, options, ..
+            ref name, value, ..
         } = subcom;
+
+        let CommandDataOptionValue::SubCommand(options) = value else {
+            Handler::send_text("Invalid usage of command", command, ctx, true).await;
+            return;
+        };
 
         let data = ctx.data.write().await;
         let BotData { database: db, .. } = data.get::<DB>().unwrap();
         if let Ok(mut x) = db.clone().lock() {
-            let mut role_id = RoleId(0);
-            let mut target_role_id = RoleId(0);
+            let mut role_id = None;
+            let mut target_role_id = None;
             let mut invert = false;
             for setting in options {
-                match (setting.name.as_str(), &setting.resolved.as_ref().unwrap()) {
-                    ("role", CommandDataOptionValue::Role(role)) => role_id = role.id,
+                match (setting.name.as_str(), &setting.value) {
+                    ("role", CommandDataOptionValue::Role(role)) => role_id = Some(role.clone()),
                     ("condition", _) => (),
                     ("required_role", CommandDataOptionValue::Role(role)) => {
-                        target_role_id = role.id
+                        target_role_id = Some(role.clone())
                     }
                     ("invert", CommandDataOptionValue::Boolean(b)) => invert = *b,
                     _ => (),
                 }
             }
             let trigger = match name.as_str() {
-                "role_add" => LOGTRIGGER::RoleAdd(role_id),
-                "role_remove" => LOGTRIGGER::RoleRemove(role_id),
+                "role_add" => LOGTRIGGER::RoleAdd(role_id.unwrap()),
+                "role_remove" => LOGTRIGGER::RoleRemove(role_id.unwrap()),
                 "join_server" => LOGTRIGGER::JoinServer(),
                 _ => panic!("invalid subcommand name"),
             };
 
-            let log_condition = LOGCONDITION::HasRole(target_role_id);
+            let log_condition = LOGCONDITION::HasRole(target_role_id.unwrap());
             if let Some(id) = x.has_response(guild_id, trigger) {
                 match command.data.name.as_str() {
                     "add_auto_response_condition" => {
@@ -2591,7 +2647,7 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::ApplicationCommand(command) = interaction {
+        if let Interaction::Command(command) = interaction {
             match command.data.name.as_str() {
                 "ping" => self.handle_ping(&command, &ctx).await,
                 // "ping with context" => self.handle_context_ping(&command, &ctx).await,
@@ -2631,7 +2687,7 @@ impl EventHandler for Handler {
                 "kick" | "leave" => self.autocomplete_leave(&completable, &ctx).await,
                 _ => (),
             }
-        } else if let Interaction::MessageComponent(component) = interaction {
+        } else if let Interaction::Component(component) = interaction {
             match component
                 .message
                 .interaction // we may get modals not spawned by interactions in the future, if so this may fail
@@ -2645,13 +2701,14 @@ impl EventHandler for Handler {
                 "log_purge" => self.process_log_purge(&component, &ctx).await,
                 _ => println!("Unknown interaction: {:?}", &component), // remove eventually?
             }
-        } else if let Interaction::ModalSubmit(modal) = interaction {
+        } else if let Interaction::Modal(modal) = interaction {
             modal
-                .create_interaction_response(&ctx.http, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content("Succes"))
-                })
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().content("Succes"),
+                    ),
+                )
                 .await
                 .unwrap();
         }
@@ -2661,18 +2718,19 @@ impl EventHandler for Handler {
         &self,
         ctx: Context,
         old_if_available: Option<Member>,
-        new: Member,
+        _: Option<Member>,
+        changes: serenity::all::GuildMemberUpdateEvent,
     ) {
         if let Some(old) = old_if_available {
-            let oldset = BTreeSet::from_iter(old.roles);
-            let newset = BTreeSet::from_iter(new.roles.iter().cloned());
+            let oldset = BTreeSet::from_iter(old.roles.iter().cloned());
+            let newset = BTreeSet::from_iter(changes.roles.iter().cloned());
 
             let mut responses: Vec<(ChannelId, String)> = vec![];
             responses.extend(
                 self.check_triggers(
                     &ctx,
-                    new.guild_id,
-                    &new,
+                    changes.guild_id,
+                    &changes.roles,
                     oldset
                         .difference(&newset)
                         .map(|id| LOGTRIGGER::RoleRemove(*id))
@@ -2683,8 +2741,8 @@ impl EventHandler for Handler {
             responses.extend(
                 self.check_triggers(
                     &ctx,
-                    new.guild_id,
-                    &new,
+                    changes.guild_id,
+                    &changes.roles,
                     newset
                         .difference(&oldset)
                         .map(|id| LOGTRIGGER::RoleAdd(*id))
@@ -2694,17 +2752,14 @@ impl EventHandler for Handler {
             );
             for (channel, message_str) in responses {
                 let message_str = message_str
-                    .replace("{userID}", format!("{}", new.user.id).as_str())
-                    .replace("{name}", new.user.name.as_str());
-                channel
-                    .send_message(&ctx.http, |message| message.content(message_str))
-                    .await
-                    .unwrap();
+                    .replace("{userID}", &changes.user.id.to_string())
+                    .replace("{name}", &changes.user.name);
+                Handler::send_channel(&message_str, channel, &ctx, false, None).await;
             }
         } else {
             println!(
                 "could not resolve old roles of member with id {}",
-                new.user.id
+                changes.user.id
             );
         }
     }
@@ -2714,7 +2769,7 @@ impl EventHandler for Handler {
             .check_triggers(
                 &ctx,
                 new_member.guild_id,
-                &new_member,
+                &new_member.roles,
                 vec![LOGTRIGGER::JoinServer()],
             )
             .await
@@ -2722,10 +2777,7 @@ impl EventHandler for Handler {
             let message_str = message_str
                 .replace("{userID}", format!("{}", new_member.user.id).as_str())
                 .replace("{name}", new_member.user.name.as_str());
-            channel
-                .send_message(&ctx.http, |message| message.content(message_str))
-                .await
-                .unwrap();
+            Handler::send_channel(&message_str, channel, &ctx, false, None).await;
         }
     }
 
@@ -2736,9 +2788,8 @@ impl EventHandler for Handler {
             "{:?}",
             ready
                 .guilds
-                .clone()
-                .into_iter()
-                .map(|x| x.id.0)
+                .iter()
+                .map(|x| x.id.get())
                 .collect::<Vec<u64>>()
         );
 
@@ -2845,7 +2896,7 @@ async fn main() {
     // Build our client.
     let mut client = Client::builder(token, intents)
         .event_handler(handler)
-        .application_id(application_id)
+        .application_id(ApplicationId::new(application_id))
         .await
         .expect("Error creating client");
     {

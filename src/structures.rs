@@ -4,6 +4,7 @@ use std::fmt;
 
 pub type ListId = u64;
 
+#[allow(dead_code)]
 pub struct PingList {
     pub id: u64,
     pub guild_id: GuildId,
@@ -77,8 +78,8 @@ impl LOGTRIGGER {
 
     pub fn fromint(trig_type: u64, ref_id: u64) -> LOGTRIGGER {
         match (trig_type, ref_id) {
-            (0, rid) => LOGTRIGGER::RoleAdd(RoleId(rid)),
-            (1, rid) => LOGTRIGGER::RoleRemove(RoleId(rid)),
+            (0, rid) => LOGTRIGGER::RoleAdd(RoleId::new(rid)),
+            (1, rid) => LOGTRIGGER::RoleRemove(RoleId::new(rid)),
             (2, _) => LOGTRIGGER::JoinServer(),
             _ => panic!("invalid logtrigger"),
         }
@@ -112,12 +113,13 @@ impl LOGCONDITION {
 
     pub fn fromint(cond_type: u64, ref_id: u64) -> LOGCONDITION {
         match cond_type {
-            0 => LOGCONDITION::HasRole(RoleId(ref_id)),
+            0 => LOGCONDITION::HasRole(RoleId::new(ref_id)),
             _ => panic!("invalid int"),
         }
     }
 }
 
+#[allow(dead_code)]
 pub enum ProposalStatus {
     ACTIVE(ListId, usize, u64, ChannelId, MessageId), // list id, votes, timestamp, channelid, message id
     ACCEPTED(ListId),

@@ -5,10 +5,12 @@ High priority, required for initial release:
         May want to turn this off in some channels
   v buttons for next / previous list page
   v thread support
+  v permission system
+  v cooldown checks
 
 Medium priority, you can expect these in the initial release:
   v buttons for proposed list instead of reactions
-  x Add message links to +listProposals
+  v Add message links to /listProposals
   v list search / filter
   o member join / leave responses
   v list aliases
@@ -17,13 +19,9 @@ Medium priority, you can expect these in the initial release:
   x proposal form, including description?
   o Automatic logging for a channel / role.
   v user exceptions
-  x union / intersect multipings?
+  v union / intersect multipings?
 
 Low priority, often either complicated or less useful:
   x list groups / collections?
   x ping message / description (that can be added when using /ping)
   x timed responses? possibly, quite a rabbit hole
-
-TODO
-  ~ permission system
-  v cooldown checks
