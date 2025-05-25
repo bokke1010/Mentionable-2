@@ -697,7 +697,7 @@ impl Handler {
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
 
-        let mut content = "".to_string();
+        let mut content = String::new();
 
         if let Ok(mut x) = db.clone().lock() {
             if let Some(_) = x.add_list(guild_id, &list_name.to_string()) {
@@ -705,6 +705,9 @@ impl Handler {
             } else {
                 content += "This list already exists.";
             };
+        }
+        if content.len() == 0 {
+            content += "Failed to access database.";
         }
 
         Handler::send_text(&content, command, ctx, false).await;
