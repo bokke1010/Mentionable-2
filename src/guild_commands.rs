@@ -81,6 +81,9 @@ pub async fn add_all_application_commands(gid: &mut GuildId, ctx: &Context) -> V
                 .set_autocomplete(true)
                 .required(true),
             ),
+            CreateCommand::new("shutdown")
+            .description("Stops the bot")
+            .default_member_permissions(permissions::Permissions::MANAGE_GUILD),
             CreateCommand::new("join")
             .description("Join all given lists")
             .add_option(

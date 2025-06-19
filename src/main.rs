@@ -170,6 +170,15 @@ impl Handler {
         let member_admin = Handler::can_manage_messages(command);
         let role_ids: &Vec<RoleId> = &member.roles;
 
+        let Some(perms) = command.app_permissions else {
+            Handler::send_text("No permissions for this channel", command, ctx, true).await;
+            return;
+        };
+        if !(perms.view_channel() && perms.send_messages()) {
+            Handler::send_text("No permissions for this channel", command, ctx, true).await;
+            return;
+        };
+
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut list_ids: Vec<ListId> = vec![];
         let mut members: BTreeSet<UserId> = BTreeSet::new();
@@ -258,6 +267,16 @@ impl Handler {
             }
         }
 
+        command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().content("Loading"),
+                ),
+            )
+            .await
+            .unwrap();
+
         // I hate this, but it should work well enough...
         let all_ids = guild_id
             .members_iter(&ctx.http)
@@ -284,9 +303,6 @@ impl Handler {
 
         let members: Vec<&UserId> = members.intersection(&present_ids).collect();
 
-        let mut first_message = true;
-
-        let mut ephemeral = false;
         let mut content = String::new();
         if invalid_lists.len() == 0 {
             global.insert(guild_id, timestamp);
@@ -309,25 +325,25 @@ impl Handler {
                     }
                 }
                 content += format!(" with {} members:\n", members.len()).as_str();
+                Handler::send_followup(&content, command, ctx, false).await;
+                content.clear();
+
                 for member in members {
                     content += format!("<@{}>, ", member).as_str();
                     if content.len() > 1940 {
-                        if first_message {
-                            Handler::send_text(&content, command, ctx, false).await;
-                            first_message = false;
-                        } else {
-                            Handler::send_followup(&content, command, ctx, false).await;
-                        }
+                        Handler::send_channel(&content, channel_id, ctx, false, None).await;
                         content.clear();
                     }
                 }
+                if content.len() > 0 {
+                    Handler::send_channel(&content, channel_id, ctx, false, None).await;
+                }
             } else {
-                content += "These lists are empty.";
+                Handler::send_followup("These lists are empty.", command, ctx, false).await;
             }
         } else {
-            ephemeral = true;
             for falselist in invalid_lists {
-                content += match falselist.1 {
+                content = match falselist.1 {
                     ListInvalidReasons::ChannelRestrictPing => {
                         format!("\nPings are not allowed in this channel.")
                     }
@@ -349,14 +365,16 @@ impl Handler {
                     ListInvalidReasons::RoleRestrictPing => {
                         format!("One of your roles prevents you from using the ping command.\n")
                     }
-                }.as_str()
+                };
+                Handler::send_followup(&content, command, ctx, false).await;
             }
         }
-        if first_message {
-            Handler::send_text(&content, command, ctx, ephemeral).await;
-        } else {
-            Handler::send_followup(&content, command, ctx, false).await;
-        }
+
+        // if first_message {
+        //     // Handler::send_text(&content, command, ctx, ephemeral).await;
+        // } else {
+        //     // Handler::send_followup(&content, command, ctx, false).await;
+        // }
     }
 
     async fn autocomplete_ping(&self, autocomplete: &CommandInteraction, ctx: &Context) {
@@ -544,6 +562,14 @@ impl Handler {
         }
         return JoinResult::BotError;
     }
+
+    // async fn shutdown(self, ctx: &Context) {
+    //     let mut data = ctx.data.write().await;
+    //     let BotData { database: db, .. } = data
+    //         .get_mut::<DB>()
+    //         .expect("Could not find database in bot data");
+    //     db.deref_mut().shutdown();
+    // }
 
     async fn remove_member(
         &self,
@@ -2675,6 +2701,7 @@ impl EventHandler for Handler {
                 "add_auto_response_condition" | "remove_auto_response_condition" => {
                     self.handle_auto_response_condition(&command, &ctx).await
                 }
+                "shutdown" => Handler::send_text("Not yet implemented", &command, &ctx, true).await,
                 _ => self.handle_invalid(&command).await,
             };
         } else if let Interaction::Autocomplete(completable) = interaction {

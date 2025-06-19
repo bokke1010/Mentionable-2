@@ -117,6 +117,10 @@ impl Database {
         self.db.execute_batch(statement).expect("Malformed SQL")
     }
 
+    fn shutdown(self) -> bool {
+        self.db.close().is_ok()
+    }
+
     //ANCHOR Guild setup
     fn has_guild(&self, guild_id: GuildId) -> bool {
         self.db
