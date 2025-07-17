@@ -51,6 +51,7 @@ struct BotData {
     database: Arc<Mutex<Database>>,
     global: std::collections::HashMap<GuildId, u64>,
     local: std::collections::HashMap<ListId, u64>,
+    id_cache: std::collections::HashMap<GuildId, (bool, std::collections::BTreeSet<UserId>)>,
 }
 
 impl TypeMapKey for DB {
@@ -160,6 +161,29 @@ impl Handler {
         Handler::send_text("This command must be used in a server.", command, ctx, true).await;
     }
 
+    async fn cached_members<'a>(
+        id_cache: &'a mut std::collections::HashMap<
+            GuildId,
+            (bool, std::collections::BTreeSet<UserId>),
+        >,
+        guild_id: GuildId,
+        ctx: &Context,
+    ) -> &'a mut BTreeSet<UserId> {
+        let (is_dirty, present_ids) = id_cache.entry(guild_id).or_insert((true, BTreeSet::new()));
+        if *is_dirty {
+            *is_dirty = false;
+            let all_ids = guild_id
+                .members_iter(&ctx.http)
+                .inspect_err(|_| *is_dirty = true)
+                .filter_map(|f| async move { f.ok() })
+                .map(|m| m.user.id)
+                .collect::<Vec<UserId>>()
+                .await;
+            present_ids.extend(all_ids);
+        }
+        present_ids
+    }
+
     async fn handle_ping(&self, command: &CommandInteraction, ctx: &Context) {
         let Some(guild_id) = command.guild_id else {
             Handler::send_not_in_guild(command, ctx).await;
@@ -189,6 +213,7 @@ impl Handler {
             database: db,
             global,
             local,
+            id_cache,
         } = data
             .get_mut::<DB>()
             .expect("Could not find database in bot data");
@@ -277,31 +302,9 @@ impl Handler {
             .await
             .unwrap();
 
-        // I hate this, but it should work well enough...
-        let all_ids = guild_id
-            .members_iter(&ctx.http)
-            .map_ok(|m| m.user.id)
-            .map(Result::ok)
-            .collect::<Vec<Option<UserId>>>()
-            .await;
-        if !all_ids.iter().all(Option::is_some) {
-            Handler::send_text(
-                "A problem occured retrieving guild members, try again later.",
-                command,
-                ctx,
-                true,
-            )
-            .await;
-            return;
-        }
-        let present_ids: BTreeSet<UserId> = BTreeSet::from_iter(
-            all_ids
-                .into_iter()
-                .map(Option::unwrap)
-                .collect::<Vec<UserId>>(),
-        );
+        let present_ids = Handler::cached_members(id_cache, guild_id, &ctx).await;
 
-        let members: Vec<&UserId> = members.intersection(&present_ids).collect();
+        let members: Vec<&UserId> = members.intersection(present_ids).collect();
 
         let mut content = String::new();
         if invalid_lists.len() == 0 {
@@ -2806,6 +2809,29 @@ impl EventHandler for Handler {
                 .replace("{name}", new_member.user.name.as_str());
             Handler::send_channel(&message_str, channel, &ctx, false, None).await;
         }
+        let mut data = ctx.data.write().await;
+        let BotData { id_cache, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
+        let present_ids = Handler::cached_members(id_cache, new_member.guild_id, &ctx).await;
+
+        present_ids.insert(new_member.user.id);
+    }
+
+    async fn guild_member_removal(
+        &self,
+        ctx: Context,
+        guild_id: GuildId,
+        user: User,
+        _: Option<Member>,
+    ) {
+        let mut data = ctx.data.write().await;
+        let BotData { id_cache, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
+        let present_ids = Handler::cached_members(id_cache, guild_id, &ctx).await;
+
+        present_ids.remove(&user.id);
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -2932,6 +2958,7 @@ async fn main() {
             database: Arc::new(database),
             global: std::collections::HashMap::new(),
             local: std::collections::HashMap::new(),
+            id_cache: std::collections::HashMap::new(),
         };
         data.insert::<DB>(bot_data);
     }
