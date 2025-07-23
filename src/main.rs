@@ -1641,6 +1641,18 @@ impl Handler {
                         }
                     }
                 }
+                CommandDataOption {
+                    ref name,
+                    value: CommandDataOptionValue::SubCommandGroup(options),
+                    ..
+                } if name == "cache" => {
+                    embed = embed.color((0, 0, 255)).description("Getting cache data");
+                    for subcommand in options {
+                        // CommandDataOption::subcommand
+                        embed = embed.field("test", subcommand.name.clone(), false);
+                    }
+                    // id_cache
+                }
                 _ => (),
             }
         }
