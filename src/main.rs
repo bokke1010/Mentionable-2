@@ -1096,10 +1096,10 @@ impl Handler {
                     page_count = 1 + (maxlists - 1) / PAGESIZE;
                     for page_index in 0..page_count {
                         let page_start = page_index * PAGESIZE;
-                        let page_end = min(maxlists, (page_index + 1) * PAGESIZE - 1);
+                        let page_end = min(maxlists, (page_index + 1) * PAGESIZE) - 1;
                         labels.push(format!("{}:{}", page_start + 1, page_end + 1));
                         if page_index == page {
-                            for list_index in page_start..page_end {
+                            for list_index in page_start..=page_end {
                                 page_selection = (page_start, page_end);
                                 visible_lists.push((
                                     x.get_list_names(lists[list_index].id).join(", "),
