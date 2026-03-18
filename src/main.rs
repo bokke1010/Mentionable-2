@@ -1,18 +1,12 @@
 use serenity::{
     all::{
-        ActionRow, ActionRowComponent, ApplicationId, Button, ButtonKind, ButtonStyle,
-        CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-        ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse,
-        CreateEmbedAuthor, CreateInputText, CreateInteractionResponse,
-        CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
-        CreateModal, EditInteractionResponse, EditMessage, EmbedAuthor, GetMessages,
-        InputTextStyle, Interaction,
+        ActionRow, ActionRowComponent, ApplicationId, Button, ButtonKind, ButtonStyle, CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, CreateAutocompleteResponse, CreateEmbedAuthor, CreateInputText, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, CreateModal, EditInteractionResponse, EditMessage, EmbedAuthor, GetMessages, InputTextStyle, Interaction
     },
     async_trait,
     builder::{
         CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu, CreateSelectMenuOption,
     },
-    futures::{future::join_all, StreamExt, TryStreamExt},
+    futures::{StreamExt, TryStreamExt, future::join_all},
     model::{
         gateway::Ready,
         guild::Member,
@@ -24,14 +18,9 @@ use serenity::{
 };
 
 use std::{
-    cmp::min,
-    collections::BTreeSet,
-    env,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    vec,
+    cmp::min, collections::BTreeSet, env, mem, ops::{Deref, DerefMut}, sync::{
+        Arc, LockResult, Mutex, PoisonError, atomic::{AtomicBool, Ordering}
+    }, vec
 };
 
 use dotenv::dotenv;
@@ -203,6 +192,14 @@ impl Handler {
             return;
         };
 
+        let deferreq = command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().content("Loading"),
+                ),
+            );
+
         let list_names: Vec<CommandDataOption> = command.data.options.clone();
         let mut list_ids: Vec<ListId> = vec![];
         let mut members: BTreeSet<UserId> = BTreeSet::new();
@@ -292,21 +289,13 @@ impl Handler {
             }
         }
 
-        command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Defer(
-                    CreateInteractionResponseMessage::new().content("Loading"),
-                ),
-            )
-            .await
-            .unwrap();
-
         let present_ids = Handler::cached_members(id_cache, guild_id, &ctx).await;
 
         let members: Vec<&UserId> = members.intersection(present_ids).collect();
 
-        let mut content = String::new();
+        deferreq.await.unwrap();
+
+        let mut content: String;
         if invalid_lists.len() == 0 {
             global.insert(guild_id, timestamp);
             for list_id in list_ids {
@@ -328,21 +317,21 @@ impl Handler {
                     }
                 }
                 content += format!(" with {} members:\n", members.len()).as_str();
-                Handler::send_followup(&content, command, ctx, false).await;
-                content.clear();
+                // Handler::send_followup(&content, command, ctx, false).await;
+                // content.clear();
 
                 for member in members {
                     content += format!("<@{}>, ", member).as_str();
                     if content.len() > 1940 {
-                        Handler::send_channel(&content, channel_id, ctx, false, None).await;
+                        Handler::send_followup(&content, command, ctx, false).await;
                         content.clear();
                     }
                 }
                 if content.len() > 0 {
-                    Handler::send_channel(&content, channel_id, ctx, false, None).await;
+                    Handler::send_followup(&content, command, ctx, false).await;
                 }
             } else {
-                Handler::send_followup("These lists are empty.", command, ctx, false).await;
+                Handler::send_followup("These lists are empty.", command, ctx, true).await;
             }
         } else {
             for falselist in invalid_lists {
@@ -369,7 +358,7 @@ impl Handler {
                         format!("One of your roles prevents you from using the ping command.\n")
                     }
                 };
-                Handler::send_followup(&content, command, ctx, false).await;
+                Handler::send_followup(&content, command, ctx, true).await;
             }
         }
 
@@ -565,14 +554,6 @@ impl Handler {
         }
         return JoinResult::BotError;
     }
-
-    // async fn shutdown(self, ctx: &Context) {
-    //     let mut data = ctx.data.write().await;
-    //     let BotData { database: db, .. } = data
-    //         .get_mut::<DB>()
-    //         .expect("Could not find database in bot data");
-    //     db.deref_mut().shutdown();
-    // }
 
     async fn remove_member(
         &self,
@@ -1649,6 +1630,11 @@ impl Handler {
                     embed = embed.color((0, 0, 255)).description("Getting cache data");
                     for subcommand in options {
                         // CommandDataOption::subcommand
+                        match subcommand.value.as_str().unwrap() {
+                            "show_status" => {},
+                            "refresh_cache" => {},
+                            _ => todo!()
+                        };
                         embed = embed.field("test", subcommand.name.clone(), false);
                     }
                     // id_cache
@@ -1727,6 +1713,34 @@ impl Handler {
     }
 
     async fn handle_invalid(&self, _command: &CommandInteraction) {}
+
+
+    async fn handle_shutdown(&self, command: &CommandInteraction, ctx: &Context) {
+        let Some(_guild_id) = command.guild_id else {
+            Handler::send_not_in_guild(command, ctx).await;
+            return;
+        };
+        if !Handler::can_manage_messages(command) {
+            Handler::send_not_allowed(&command, &ctx).await;
+            return;
+        }
+
+        let mut data = ctx.data.write().await;
+        let BotData { database: _db, .. } = data
+            .get_mut::<DB>()
+            .expect("Could not find database in bot data");
+
+        Handler::send_text("NYI", command, ctx, true).await;
+
+
+        // if let Ok(mut x) = db.clone().lock() {
+            // x.shutdown();
+            //TODO fix
+            // x.deref_mut().shutdown();
+        // }
+
+
+    }
 
     async fn handle_propose(&self, command: &CommandInteraction, ctx: &Context) {
         let Some(guild_id) = command.guild_id else {
@@ -2716,7 +2730,7 @@ impl EventHandler for Handler {
                 "add_auto_response_condition" | "remove_auto_response_condition" => {
                     self.handle_auto_response_condition(&command, &ctx).await
                 }
-                "shutdown" => Handler::send_text("Not yet implemented", &command, &ctx, true).await,
+                "shutdown" => self.handle_shutdown(&command, &ctx).await,
                 _ => self.handle_invalid(&command).await,
             };
         } else if let Interaction::Autocomplete(completable) = interaction {
