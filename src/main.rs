@@ -18,8 +18,8 @@ use serenity::{
 };
 
 use std::{
-    cmp::min, collections::BTreeSet, env, mem, ops::{Deref, DerefMut}, sync::{
-        Arc, LockResult, Mutex, PoisonError, atomic::{AtomicBool, Ordering}
+    cmp::min, collections::BTreeSet, env, sync::{
+        Arc, Mutex, atomic::{AtomicBool, Ordering}
     }, vec
 };
 

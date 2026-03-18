@@ -117,7 +117,7 @@ impl Database {
         self.db.execute_batch(statement).expect("Malformed SQL")
     }
 
-    pub fn shutdown(self) -> bool {
+    pub fn _shutdown(self) -> bool {
         self.db.close().is_ok()
     }
 
